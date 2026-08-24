@@ -1,0 +1,19 @@
+[Unit]
+Description=Bunker MINI low-latency teleop TCP (port 9100)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=fafu_robot
+Group=fafu_robot
+WorkingDirectory=/home/fafu_robot/Desktop/chassis_lidar_drivers/bunker_jetson
+Environment=PYTHONUNBUFFERED=1
+# 只开遥控、不开完整 agent 时用本服务。agent 已在跑时不要同时 enable：
+# agent 默认也会听 9100，两边会抢端口和 CAN。
+ExecStart=/usr/bin/python3 /home/fafu_robot/Desktop/chassis_lidar_drivers/bunker_jetson/teleop_tcp_server.py --direct-can --bind 0.0.0.0 --port 9100
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

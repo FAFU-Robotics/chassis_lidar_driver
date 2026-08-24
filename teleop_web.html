@@ -1,0 +1,1147 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Bunker 本地控制台</title>
+<style>
+  :root {
+    --bg: #0a1016;
+    --bg-2: #101820;
+    --card: #141d27;
+    --line: #243140;
+    --line-2: #334556;
+    --text: #e8eef5;
+    --muted: #8b9aab;
+    --dim: #5d6d7e;
+    --ok: #3dd68c;
+    --ok-dim: #163526;
+    --warn: #f0c14b;
+    --bad: #ff4d5a;
+    --bad-dim: #3a1216;
+    --cyan: #5ec8ff;
+    --cyan-dim: #123346;
+    --pad: #1a2430;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; min-height: 100%;
+    background:
+      radial-gradient(1200px 500px at 10% -10%, #163044 0%, transparent 55%),
+      var(--bg);
+    color: var(--text);
+    font: 14px/1.45 "Segoe UI", "PingFang SC", "Noto Sans SC", "Microsoft YaHei", sans-serif;
+  }
+  button, input, select { font: inherit; color: inherit; }
+  input, select {
+    background: #0d141c; border: 1px solid var(--line-2); border-radius: 8px;
+    padding: 8px 10px; outline: none; min-width: 0; width: 100%;
+  }
+  input:focus, select:focus { border-color: var(--cyan); box-shadow: 0 0 0 3px rgba(94,200,255,.12); }
+  button {
+    border: 1px solid var(--line-2); background: #1b2733; border-radius: 8px;
+    padding: 8px 12px; cursor: pointer; color: var(--text);
+  }
+  button:hover { border-color: #4d6578; background: #223140; }
+  button:active { transform: translateY(1px); }
+  button.primary { background: var(--cyan-dim); border-color: #2d6f8f; color: #d7f3ff; }
+  button.ok { background: var(--ok-dim); border-color: #2f7a55; color: #c8f5df; }
+  button.danger {
+    background: var(--bad); border-color: #ff4d5a; color: #1a0406;
+    font-weight: 700; letter-spacing: .08em;
+  }
+  button.ghost { background: transparent; }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  .top {
+    position: sticky; top: 0; z-index: 20;
+    display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+    padding: 14px 20px; background: rgba(10,16,22,.92);
+    border-bottom: 1px solid var(--line); backdrop-filter: blur(10px);
+  }
+  .brand { display: flex; flex-direction: column; gap: 2px; min-width: 180px; }
+  .brand b { font-size: 16px; letter-spacing: .04em; }
+  .brand span { color: var(--muted); font-size: 12px; }
+  .leds { display: flex; gap: 10px; flex: 1; flex-wrap: wrap; }
+  .led {
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 10px; background: var(--card); border: 1px solid var(--line);
+    border-radius: 999px; font-size: 12px; color: var(--muted);
+  }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dim); }
+  .dot.on { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+  .dot.off { background: var(--bad); }
+  .estop {
+    min-width: 128px; height: 44px; border-radius: 10px; font-size: 15px;
+  }
+  .wrap { max-width: 1240px; margin: 0 auto; padding: 12px 20px 40px; }
+  .navtabs {
+    display: flex; gap: 6px; flex-wrap: wrap;
+    max-width: 1240px; margin: 0 auto; padding: 10px 20px 0;
+  }
+  .navtabs a {
+    text-decoration: none; color: var(--muted);
+    padding: 8px 12px; border-radius: 999px; border: 1px solid var(--line);
+    background: var(--card); font-size: 13px;
+  }
+  .navtabs a:hover { border-color: #4d6578; color: var(--text); }
+  .navtabs a.on { background: var(--cyan-dim); border-color: #2d6f8f; color: #d7f3ff; }
+  .page { display: none; }
+  .page.on { display: block; }
+  .page-head { margin: 0 0 14px; }
+  .page-head h1 { margin: 0; font-size: 22px; letter-spacing: .03em; }
+  .page-head p { margin: 6px 0 0; color: var(--muted); font-size: 13px; }
+  .tiles {
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px;
+  }
+  .tile {
+    display: block; text-decoration: none; color: inherit;
+    background: var(--card); border: 1px solid var(--line); border-radius: 14px;
+    padding: 18px 16px; min-height: 120px;
+  }
+  .tile:hover { border-color: #4d6578; background: #1a2530; }
+  .tile .tag { color: var(--cyan); font-size: 11px; letter-spacing: .12em; text-transform: uppercase; }
+  .tile h3 { margin: 8px 0 6px; font-size: 18px; }
+  .tile p { margin: 0; color: var(--muted); font-size: 13px; }
+  .metrics {
+    display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; margin-bottom: 16px;
+  }
+  .metric {
+    background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+    padding: 12px 14px; min-height: 76px;
+  }
+  .metric .k { color: var(--dim); font-size: 11px; letter-spacing: .12em; text-transform: uppercase; }
+  .metric .v { margin-top: 6px; font: 600 18px/1.2 ui-monospace, "Cascadia Mono", Menlo, monospace; }
+  .metric .s { color: var(--muted); font-size: 12px; margin-top: 4px; }
+  .cols { display: grid; grid-template-columns: 340px 1fr; gap: 14px; }
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: 14px;
+    padding: 16px;
+  }
+  .card h2 {
+    margin: 0 0 12px; font-size: 13px; letter-spacing: .1em; text-transform: uppercase;
+    color: var(--muted); font-weight: 600;
+  }
+  .pad {
+    display: grid; grid-template-columns: repeat(3, 72px); gap: 8px;
+    justify-content: center; margin: 8px 0 14px;
+  }
+  .k {
+    width: 72px; height: 72px; border-radius: 12px; background: var(--pad);
+    border: 1px solid var(--line-2); display: flex; align-items: center;
+    justify-content: center; font-size: 20px; font-weight: 700; user-select: none;
+    touch-action: none;
+  }
+  .k.on { background: #1f6b45; border-color: var(--ok); color: #fff; }
+  .drive-meta { color: var(--muted); font-size: 12px; text-align: center; }
+  .drive-meta b { color: var(--text); font-family: ui-monospace, Menlo, monospace; }
+  .hint { color: var(--dim); font-size: 12px; margin: 12px 0 0; }
+  .hint a { color: var(--cyan); }
+  .panel { margin-bottom: 14px; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 8px; }
+  .row > * { flex: 1; }
+  .row button { flex: 0 0 auto; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+  .drive-bar {
+    display: flex; flex-direction: column; gap: 4px;
+    padding: 10px 12px; border-radius: 10px; margin-bottom: 12px;
+    border: 1px solid var(--line-2); background: #0d141c;
+  }
+  .drive-bar b { font-family: ui-monospace, Menlo, monospace; }
+  .drive-bar.idle { color: var(--muted); }
+  .drive-bar.run { border-color: #2f7a55; background: var(--ok-dim); color: #c8f5df; }
+  .drive-bar.warn { border-color: #8a6a1a; background: #2a220c; color: var(--warn); }
+  .drive-bar.bad { border-color: #7a2a32; background: var(--bad-dim); color: #ffd0d4; }
+  .subcard {
+    border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin-bottom: 10px;
+    background: #101820;
+  }
+  .subcard h3 { margin: 0 0 6px; font-size: 13px; color: var(--text); }
+  .subcard .lead { color: var(--muted); font-size: 12px; margin: 0 0 10px; }
+  .preview {
+    min-height: 2.4em; color: var(--cyan); font: 12px/1.45 ui-monospace, Menlo, monospace;
+    margin: 8px 0;
+  }
+  .nav-split { display: grid; grid-template-columns: 220px 1fr; gap: 12px; margin-bottom: 12px; }
+  #poseCanvas {
+    width: 100%; height: 180px; background: #0b1218; border: 1px solid var(--line);
+    border-radius: 10px;
+  }
+  .nav-legend { color: var(--muted); font-size: 12px; }
+  .nav-legend div { margin: 0 0 6px; }
+  .swatch { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+  .swatch.pose { background: var(--cyan); }
+  .swatch.goal { background: var(--ok); }
+  .swatch.origin { background: var(--warn); }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 8px; }
+  .chips button { padding: 6px 8px; font-size: 12px; }
+  label.fld { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+  label.fld span { color: var(--dim); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; }
+  label.chk { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; flex: 0 0 auto; }
+  label.chk input { width: auto; }
+  .tracks { max-height: 360px; overflow: auto; border: 1px solid var(--line); border-radius: 8px; }
+  .tracks button {
+    display: block; width: 100%; text-align: left; border: 0; border-bottom: 1px solid var(--line);
+    border-radius: 0; background: transparent; padding: 8px 10px;
+  }
+  .tracks button:last-child { border-bottom: 0; }
+  .tracks button.sel { background: var(--cyan-dim); }
+  .log {
+    margin-top: 14px; background: #0c131a; border: 1px solid var(--line);
+    border-radius: 14px; padding: 12px 14px; min-height: 140px;
+  }
+  .log h2 { margin-bottom: 8px; }
+  #log {
+    margin: 0; height: 160px; overflow: auto; color: #b7c4d2;
+    font: 12px/1.5 ui-monospace, Menlo, monospace; white-space: pre-wrap;
+  }
+  .warn { color: var(--warn); font-size: 12px; min-height: 1.2em; margin-top: 8px; }
+  .ok { color: var(--ok); }
+  .bad { color: var(--bad); }
+  .metric.click { cursor: pointer; }
+  .metric.click:hover { border-color: #4d6578; }
+  .modal {
+    display: none; position: fixed; inset: 0; z-index: 40;
+    background: rgba(6, 10, 14, .72); align-items: center; justify-content: center;
+    padding: 20px;
+  }
+  .modal.on { display: flex; }
+  .sheet {
+    width: min(860px, 100%); max-height: calc(100vh - 40px); overflow: auto;
+    background: var(--card); border: 1px solid var(--line-2); border-radius: 16px;
+    padding: 18px 20px 20px;
+    box-shadow: 0 24px 60px rgba(0,0,0,.45);
+  }
+  .sheet-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+  .sheet-top h2 { margin: 0; font-size: 16px; letter-spacing: .04em; }
+  .sheet-top p { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
+  .sheet-grid {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 14px;
+  }
+  .kv {
+    background: #0d141c; border: 1px solid var(--line); border-radius: 12px; padding: 12px;
+  }
+  .kv h3 {
+    margin: 0 0 8px; font-size: 11px; letter-spacing: .12em; text-transform: uppercase;
+    color: var(--dim);
+  }
+  .kv table { width: 100%; border-collapse: collapse; }
+  .kv td { padding: 4px 0; vertical-align: top; }
+  .kv td:first-child { color: var(--muted); width: 42%; }
+  .kv td:last-child { font-family: ui-monospace, Menlo, monospace; }
+  .tone-ok { color: var(--ok); }
+  .tone-warn { color: var(--warn); }
+  .tone-bad { color: var(--bad); }
+  @media (max-width: 960px) {
+    .metrics { grid-template-columns: 1fr 1fr; }
+    .cols { grid-template-columns: 1fr; }
+    .sheet-grid { grid-template-columns: 1fr; }
+    .nav-split { grid-template-columns: 1fr; }
+    .tiles { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="top">
+  <div class="brand">
+    <b>BUNKER 本地控制台</b>
+    <span>笔记本 HID 100Hz · 任务走 TCP :9100</span>
+  </div>
+  <div class="leds">
+    <div class="led"><span class="dot" id="dotLink"></span><span id="linkTxt">未连接</span></div>
+    <div class="led"><span>遥控</span> <b id="hzTxt">0 Hz</b></div>
+    <div class="led"><span>RTT</span> <b id="rttTxt">—</b></div>
+    <div class="led"><span>档位</span> <b id="gearTxt">0.10 / 0.20</b></div>
+  </div>
+  <button class="primary" type="button" id="btnChassis">底盘状态</button>
+  <a class="ghost" href="/logout" style="text-decoration:none;padding:8px 12px;border:1px solid var(--line-2);border-radius:8px;color:var(--muted)">退出</a>
+  <button class="estop danger" id="btnEstop" type="button">急停 ESTOP</button>
+</div>
+
+<nav class="navtabs" id="navTabs">
+  <a href="#/home" data-page="home">总览</a>
+  <a href="#/drive" data-page="drive">遥控 WASD</a>
+  <a href="#/nav" data-page="nav">任务 / 导航</a>
+  <a href="#/tracks" data-page="tracks">轨迹</a>
+  <a href="#/lidar" data-page="lidar">雷达 / 地图</a>
+  <a href="#/chassis" data-page="chassis">底盘状态</a>
+  <a href="#/events" data-page="events">事件</a>
+</nav>
+
+<div class="wrap">
+  <div class="metrics">
+    <div class="metric"><div class="k">位姿 Pose</div><div class="v" id="mPose">—</div><div class="s" id="mYaw">yaw —</div></div>
+    <div class="metric"><div class="k">速度 / 模式</div><div class="v" id="mSpeed">—</div><div class="s" id="mMode">mode —</div></div>
+    <div class="metric"><div class="k">雷达 Lidar</div><div class="v" id="mLidar">—</div><div class="s" id="mFront">前方 —</div></div>
+    <div class="metric"><div class="k">任务 Mission</div><div class="v" id="mMission">—</div><div class="s" id="mRec">未录制</div></div>
+    <div class="metric click" id="cardBat" title="查看底盘状态">
+      <div class="k">电量 / CAN</div><div class="v" id="mBat">—</div><div class="s" id="mCan">—</div>
+    </div>
+  </div>
+
+  <section class="page" id="page-home">
+    <div class="page-head">
+      <h1>功能总览</h1>
+      <p>点下面一类进入对应操作页。顶栏急停、WASD 遥控在任何页面都仍然有效。</p>
+    </div>
+    <div class="tiles">
+      <a class="tile" href="#/drive">
+        <div class="tag">100Hz HID</div>
+        <h3>遥控 WASD</h3>
+        <p>键盘或触控方向键开车、调档。笔记本 HID 走 TCP :9100。</p>
+      </a>
+      <a class="tile" href="#/nav">
+        <div class="tag">任务</div>
+        <h3>任务 / 导航</h3>
+        <p>开环 move、世界坐标 goto、探路 fo、回原点、取消任务。</p>
+      </a>
+      <a class="tile" href="#/tracks">
+        <div class="tag">录制</div>
+        <h3>轨迹</h3>
+        <p>录制、回放、往返、原路返回、运输任务。</p>
+      </a>
+      <a class="tile" href="#/lidar">
+        <div class="tag">传感器</div>
+        <h3>雷达 / 地图</h3>
+        <p>雷达开关、工控机桌面点云/地图窗、位姿标定、导入地图。</p>
+      </a>
+      <a class="tile" href="#/chassis">
+        <div class="tag">诊断</div>
+        <h3>底盘状态</h3>
+        <p>BMS、0x211 系统、运动反馈、里程计、CAN / 遥控。</p>
+      </a>
+      <a class="tile" href="#/events">
+        <div class="tag">日志</div>
+        <h3>事件</h3>
+        <p>工控机回传的 fault / arrived / move 等实时事件。</p>
+      </a>
+    </div>
+  </section>
+
+  <section class="page" id="page-drive">
+    <div class="page-head">
+      <h1>遥控 · WASD</h1>
+      <p>先点本页空白处，切英文。输入框聚焦时不会开车。</p>
+    </div>
+    <div class="card" style="max-width:420px">
+      <h2>遥控 · WASD</h2>
+      <div class="pad">
+        <div></div><div class="k" id="kw">W</div><div></div>
+        <div class="k" id="ka">A</div><div class="k" id="ks">S</div><div class="k" id="kd">D</div>
+      </div>
+      <div class="drive-meta">
+        按下 <b id="litTxt">无</b><br/>
+        本机指令 <b id="cmdTxt">v=0.00 w=0.00</b><br/>
+        工控机已收 <b id="appliedTxt">—</b>
+      </div>
+      <div class="row" style="margin-top:12px">
+        <button type="button" id="btnMinus">档位 −</button>
+        <button type="button" id="btnPlus">档位 +</button>
+      </div>
+      <p class="hint">用 Chrome / Edge 打开，先切英文并点本页空白处。输入框聚焦时 WASD 不会开车。空格或右上角急停立即停车。关页/切走会停车。</p>
+      <p class="hint">更硬的 HID 脚本：<a href="/teleop_from_laptop.py" download>下载 teleop_from_laptop.py</a>
+        后在笔记本 PowerShell 运行
+        <code>python teleop_from_laptop.py --host <span id="hostip"></span></code></p>
+      <div class="warn" id="warnTxt"></div>
+    </div>
+  </section>
+
+  <section class="page" id="page-nav">
+    <div class="page-head">
+      <h1>任务 / 导航</h1>
+      <p>move 是速度 × 时间；goto 是世界坐标。两块不是一回事。</p>
+    </div>
+      <div class="card panel">
+        <h2>任务 / 导航</h2>
+        <div id="driveBar" class="drive-bar idle">
+          <div><b id="driveKind">空闲</b></div>
+          <div id="driveDetail">还没有执行 move / goto。下面两块不是一回事。</div>
+        </div>
+        <div class="nav-split">
+          <canvas id="poseCanvas" width="280" height="220"></canvas>
+          <div class="nav-legend">
+            <div><span class="swatch origin"></span>原点 (0, 0) = 启动或「重置原点」</div>
+            <div><span class="swatch pose"></span>当前位姿（蓝三角 = 车头）</div>
+            <div><span class="swatch goal"></span>goto 目标（世界坐标，不是前进米数）</div>
+            <p class="hint" id="poseHint">x 向前（启动时车头），y 向左。想直行固定距离请用下面的 move，不要填 goto。</p>
+          </div>
+        </div>
+        <div class="row">
+          <input id="foName" placeholder="目标名，默认 target" autocomplete="off"/>
+          <label class="chk"><input id="foApproach" type="checkbox" checked/>对接</label>
+          <button class="ok" type="button" data-act="find_object">探路 fo</button>
+          <button type="button" data-act="go_home">回原点</button>
+          <button type="button" data-act="cancel">取消任务</button>
+          <button type="button" data-act="odom_reset">重置原点</button>
+          <button type="button" data-act="query">刷新状态</button>
+          <button type="button" data-act="grasp_done">抓取完成</button>
+        </div>
+
+        <div class="subcard">
+          <h3>开环 move · 速度 × 时间</h3>
+          <p class="lead">不看地图、不走规划。v=线速度 m/s，w=角速度 rad/s，再乘持续时间。例如 0.20 × 3s ≈ 前进 0.60 m。不是「去某个坐标」。</p>
+          <div class="chips">
+            <button type="button" data-move="0.15,0,2">前进 2s</button>
+            <button type="button" data-move="0.20,0,3">前进 3s</button>
+            <button type="button" data-move="-0.12,0,2">后退 2s</button>
+            <button type="button" data-move="0,0.40,2">左转 2s</button>
+            <button type="button" data-move="0,-0.40,2">右转 2s</button>
+          </div>
+          <div class="grid3">
+            <label class="fld"><span>线速度 v (m/s)</span><input id="mv" value="0.15" inputmode="decimal" autocomplete="off"/></label>
+            <label class="fld"><span>角速度 w (rad/s)</span><input id="mw" value="0" inputmode="decimal" autocomplete="off"/></label>
+            <label class="fld"><span>持续秒（必填）</span><input id="md" value="2" inputmode="decimal" autocomplete="off"/></label>
+          </div>
+          <div class="preview" id="movePreview"></div>
+          <div class="row">
+            <button class="primary" type="button" data-act="move">执行 move</button>
+            <label class="chk"><input id="mvOpen" type="checkbox"/>开环（不过雷达）</label>
+          </div>
+        </div>
+
+        <div class="subcard">
+          <h3>导航 goto · 世界坐标 (x, y)</h3>
+          <p class="lead">走到里程系里的绝对点。需要雷达在线。填 (1, 0) 是「原点前方 1 m」，不是「再往前开 1 m」。当前若不在原点，实际路程是当前位置到该点的直线/绕障。</p>
+          <div class="chips">
+            <button type="button" data-goto="1,0">原点前 1m</button>
+            <button type="button" data-goto="2,0">原点前 2m</button>
+            <button type="button" data-goto="0,1">原点左 1m</button>
+            <button type="button" data-goto-rel="1,0">车头前方 1m</button>
+          </div>
+          <div class="grid3">
+            <label class="fld"><span>目标 x (m)</span><input id="gx" value="1" inputmode="decimal" autocomplete="off"/></label>
+            <label class="fld"><span>目标 y (m)</span><input id="gy" value="0" inputmode="decimal" autocomplete="off"/></label>
+            <label class="fld"><span>限速 可选 ≤0.5</span><input id="gs" placeholder="默认 0.30" inputmode="decimal" autocomplete="off"/></label>
+          </div>
+          <div class="preview" id="gotoPreview"></div>
+          <div class="row">
+            <button class="ok" type="button" data-act="goto" id="btnGoto">导航 goto</button>
+            <label class="chk"><input id="mapRet" type="checkbox"/>地图优先返回</label>
+            <button type="button" data-act="map_return">应用 map_return</button>
+          </div>
+        </div>
+      </div>
+  </section>
+
+  <section class="page" id="page-tracks">
+    <div class="page-head">
+      <h1>轨迹</h1>
+      <p>先点选或填写轨迹名，再录制 / 回放。文件在工控机 tracks/。</p>
+    </div>
+      <div class="card panel">
+        <h2>轨迹</h2>
+        <div class="row">
+          <input id="trName" placeholder="轨迹名" autocomplete="off"/>
+          <button class="ok" type="button" data-act="track_record">开始录制 r</button>
+          <button type="button" data-act="track_stop">停止并保存</button>
+          <button class="primary" type="button" data-act="track_follow">回放 f</button>
+          <button type="button" data-act="track_follow_back">往返 fb</button>
+          <button type="button" data-act="track_reverse">原路返回 B</button>
+          <button type="button" data-act="track_delete">删除</button>
+          <button type="button" data-act="task_submit">运输任务</button>
+          <button class="ghost" type="button" data-act="tracks">刷新列表</button>
+        </div>
+        <div class="tracks" id="trackList"><div class="hint" style="padding:8px">还没有轨迹列表，点刷新</div></div>
+      </div>
+  </section>
+
+  <section class="page" id="page-lidar">
+    <div class="page-head">
+      <h1>雷达 / 地图</h1>
+      <p>点云和地图窗口开在工控机桌面，不是这台笔记本。</p>
+    </div>
+      <div class="card panel">
+        <h2>雷达 / 地图</h2>
+        <div class="row">
+          <button class="ok" type="button" data-act="lidar_on">雷达开</button>
+          <button type="button" data-act="lidar_off">雷达关</button>
+          <button type="button" data-act="lidar_status">雷达自检</button>
+          <button type="button" data-act="lidar_map">地图窗</button>
+          <button type="button" data-act="point_cloud">点云窗</button>
+          <button type="button" data-act="view_both">点云+3D</button>
+          <button type="button" data-act="view_off">关窗口</button>
+        </div>
+        <div class="grid3">
+          <input id="pax" placeholder="标定 x" inputmode="decimal" autocomplete="off"/>
+          <input id="pay" placeholder="标定 y" inputmode="decimal" autocomplete="off"/>
+          <input id="payaw" placeholder="yaw°" inputmode="decimal" autocomplete="off"/>
+        </div>
+        <div class="row">
+          <button type="button" data-act="pose_align">位姿标定</button>
+          <input id="mapFile" placeholder="工控机地图文件路径.json" autocomplete="off"/>
+          <button type="button" data-act="map_upload">导入地图</button>
+        </div>
+        <p class="hint">点云/地图窗口开在工控机桌面，不是这台笔记本。本页不替代 kb：浏览器已经是 HID 遥控。</p>
+      </div>
+  </section>
+
+  <section class="page" id="page-chassis">
+    <div class="page-head">
+      <h1>底盘状态</h1>
+      <p>对照 Bunker Mini 2.0 手册反馈帧。低电：电压 &lt;25V 应充电，&lt;24V 可能停广播 0x211。</p>
+    </div>
+    <div class="row" style="margin-bottom:12px">
+      <button class="primary" type="button" id="btnChassisRefresh">刷新</button>
+    </div>
+    <div class="sheet-grid" id="chassisBody">
+      <div class="kv"><h3>等待数据</h3><p class="hint">点刷新后从工控机拉取 0x211 / BMS。</p></div>
+    </div>
+  </section>
+
+  <section class="page" id="page-events">
+    <div class="page-head">
+      <h1>事件</h1>
+      <p>工控机回传的任务、故障、雷达事件。遥控仍在后台 100Hz 发送。</p>
+    </div>
+    <div class="log">
+      <h2>事件</h2>
+      <pre id="log">等待连接…</pre>
+    </div>
+  </section>
+</div>
+
+<div class="modal" id="chassisModal">
+  <div class="sheet">
+    <div class="sheet-top">
+      <div>
+        <h2>底盘状态</h2>
+        <p>已改为独立页面。点顶栏「底盘状态」或总览进入。</p>
+      </div>
+      <div class="row" style="margin:0; flex:0 0 auto">
+        <button type="button" id="btnChassisClose">关闭</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const MISSION_CN = {
+  recon:"探路", found:"已发现", navigating:"导航中", approaching:"对接中",
+  ready:"可抓取", holding:"等待抓取", grasped:"已抓取", returning:"返回中",
+  done:"完成", failed:"失败", cancelled:"已取消", interrupted:"断电中断"
+};
+const down = {w:false,a:false,s:false,d:false,space:false};
+const CODE = {KeyW:"w",KeyA:"a",KeyS:"s",KeyD:"d"};
+let vStep = 0.10, wStep = 0.40;
+let ws = null, hz = 0, n = 0, lastHz = performance.now(), rtt = null, applied = "—";
+let selectedTrack = "";
+let lastState = null;
+let driveLocal = {kind:"idle", remainS:null, t0:0, detail:""};
+document.getElementById("hostip").textContent = location.hostname;
+const DRIVE_CN = {idle:"空闲", move:"开环 move", goto:"导航 goto", mission:"任务中", replay:"轨迹回放"};
+const PAGES = ["home","drive","nav","tracks","lidar","chassis","events"];
+const PAGE_TITLE = {
+  home:"总览", drive:"遥控 WASD", nav:"任务 / 导航", tracks:"轨迹",
+  lidar:"雷达 / 地图", chassis:"底盘状态", events:"事件"
+};
+function currentPage() {
+  const raw = (location.hash || "#/home").replace(/^#\/?/, "").split("?")[0];
+  return PAGES.indexOf(raw) >= 0 ? raw : "home";
+}
+function showPage(name, push) {
+  const page = PAGES.indexOf(name) >= 0 ? name : "home";
+  document.querySelectorAll(".page").forEach((el) => el.classList.toggle("on", el.id === "page-" + page));
+  document.querySelectorAll("#navTabs a").forEach((a) => a.classList.toggle("on", a.getAttribute("data-page") === page));
+  document.title = "Bunker · " + (PAGE_TITLE[page] || page);
+  if (push !== false && currentPage() !== page) location.hash = "#/" + page;
+  if (page === "nav") drawPose(lastState || {});
+  if (page === "chassis") {
+    renderChassis(lastState);
+    loadChassis();
+  }
+  if (page === "tracks") send({t:"tracks"});
+}
+
+function typing() {
+  const el = document.activeElement;
+  if (!el) return false;
+  const tag = (el.tagName || "").toLowerCase();
+  return tag === "input" || tag === "textarea" || tag === "select" || el.isContentEditable;
+}
+function axis() {
+  return {
+    v: ((down.w?1:0) - (down.s?1:0)) * vStep,
+    w: ((down.a?1:0) - (down.d?1:0)) * wStep
+  };
+}
+function paint() {
+  for (const k of "wasd") document.getElementById("k"+k).classList.toggle("on", down[k]);
+  const a = axis();
+  document.getElementById("litTxt").textContent = ["w","a","s","d"].filter(k => down[k]).join("") || "无";
+  document.getElementById("cmdTxt").textContent = "v=" + a.v.toFixed(2) + " w=" + a.w.toFixed(2);
+  document.getElementById("gearTxt").textContent = vStep.toFixed(2) + " / " + wStep.toFixed(2);
+  document.getElementById("appliedTxt").textContent = applied;
+}
+function setLink(ok, extra) {
+  document.getElementById("dotLink").className = "dot " + (ok ? "on" : "off");
+  document.getElementById("linkTxt").textContent = (ok ? "已连接" : "未连接") + (extra ? " · " + extra : "");
+  document.getElementById("hzTxt").textContent = hz + " Hz";
+  document.getElementById("rttTxt").textContent = rtt == null ? "—" : rtt.toFixed(1) + " ms";
+}
+function log(line) {
+  const box = document.getElementById("log");
+  const t = new Date().toLocaleTimeString();
+  box.textContent = "[" + t + "] " + line + "\n" + box.textContent.split("\n").slice(0, 80).join("\n");
+}
+function send(obj) {
+  if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj));
+}
+function stickNow() {
+  if (down.space) { send({t:"e"}); n += 1; return; }
+  const a = axis();
+  send({t:"s", v:a.v, w:a.w});
+  n += 1;
+}
+function num(id) {
+  const raw = document.getElementById(id).value.trim();
+  if (!raw) return null;
+  const v = Number(raw);
+  return Number.isFinite(v) ? v : null;
+}
+function trackName() {
+  return document.getElementById("trName").value.trim() || selectedTrack;
+}
+function sendCmd(action, extra) {
+  const msg = Object.assign({t:"c", action: action}, extra || {});
+  send(msg);
+  log("下发 " + action + (extra ? " " + JSON.stringify(extra) : ""));
+}
+function handleAct(act) {
+  if (act === "find_object") {
+    sendCmd("find_object", {
+      name: document.getElementById("foName").value.trim() || "target",
+      approach: document.getElementById("foApproach").checked
+    });
+    return;
+  }
+  if (act === "goto") {
+    const x = num("gx"), y = num("gy");
+    if (x == null || y == null) { log("goto 需要 x / y"); return; }
+    const lidar = (lastState && lastState.lidar) || {};
+    if (!lidar.online) {
+      log("goto 需要雷达在线。先点「雷达开」，等顶栏雷达变成「在线」再导航。");
+      setDriveBar("bad", "无法 goto", "雷达离线：导航会被拒绝。先开雷达，或改用开环 move / WASD。");
+      return;
+    }
+    const extra = {x:x, y:y};
+    const s = num("gs");
+    if (s != null) extra.speed = s;
+    sendCmd("goto", extra);
+    setDriveBar("run", "导航 goto", "已下发目标 (" + x.toFixed(2) + ", " + y.toFixed(2) + ")，等工控机确认…");
+    return;
+  }
+  if (act === "move") {
+    const v = num("mv"), w = num("mw");
+    if (v == null || w == null) { log("move 需要 v / w"); return; }
+    let d = num("md");
+    if (d == null || d <= 0) { d = 2; document.getElementById("md").value = "2"; }
+    const extra = {v:v, w:w, duration:d};
+    if (document.getElementById("mvOpen").checked) extra.openLoop = true;
+    sendCmd("move", extra);
+    const dist = v * d;
+    setDriveBar("run", "开环 move",
+      "已下发 v=" + v.toFixed(2) + " × " + d.toFixed(1) + "s ≈ " + dist.toFixed(2) + " m" +
+      (extra.openLoop ? "（开环）" : "") + "。看顶栏速度和左边位姿是否变化。");
+    return;
+  }
+  if (act === "map_return") {
+    sendCmd("map_return", {mapReturn: document.getElementById("mapRet").checked});
+    return;
+  }
+  if (act === "track_record") {
+    const name = trackName();
+    if (!name) { log("录制需要轨迹名"); return; }
+    sendCmd("track_record", {name: name});
+    return;
+  }
+  if (act === "track_stop") { sendCmd("track_record", {}); return; }
+  if (act === "track_follow" || act === "track_follow_back" || act === "track_reverse" || act === "track_delete" || act === "task_submit") {
+    const name = trackName();
+    if (!name) { log("请填写或点选轨迹名"); return; }
+    if (act === "track_delete" && !confirm("删除轨迹 " + name + " ?")) return;
+    if (act === "track_reverse") sendCmd("track_follow", {trackId: name, reverse: true});
+    else if (act === "task_submit") sendCmd("task_submit", {trackId: name});
+    else sendCmd(act, {trackId: name, name: name});
+    return;
+  }
+  if (act === "tracks") { send({t:"tracks"}); return; }
+  if (act === "pose_align") {
+    const x = num("pax"), y = num("pay"), yaw = num("payaw");
+    if (x == null || y == null || yaw == null) { log("标定需要 x y yaw"); return; }
+    sendCmd("pose_align", {x:x, y:y, yawDeg:yaw});
+    return;
+  }
+  if (act === "map_upload") {
+    const file = document.getElementById("mapFile").value.trim();
+    if (!file) { log("请填写工控机上的地图文件路径"); return; }
+    sendCmd("map_upload", {file: file});
+    return;
+  }
+  if (act === "view_both" || act === "view_off" || act === "point_cloud" || act === "lidar_map") {
+    send({t:"view", mode: act === "point_cloud" ? "cloud" : act === "lidar_map" ? "map" : act === "view_both" ? "both" : "off"});
+    if (act === "point_cloud" || act === "lidar_map") sendCmd(act === "lidar_map" ? "lidar_map" : "point_cloud", {});
+    else if (act === "view_both") sendCmd("point_cloud", {});
+    log(act === "view_off" ? "关闭工控机雷达窗口" : "打开工控机雷达窗口");
+    return;
+  }
+  sendCmd(act, {});
+}
+function renderTracks(items) {
+  const box = document.getElementById("trackList");
+  if (!items || !items.length) {
+    box.innerHTML = '<div class="hint" style="padding:8px">tracks/ 还没有轨迹。先录制一条。</div>';
+    return;
+  }
+  box.innerHTML = "";
+  items.forEach((it) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = it.name + "  ·  " + Number(it.duration || 0).toFixed(1) + "s  ·  " + (it.waypoints || 0) + " 航点";
+    if (it.name === selectedTrack) b.classList.add("sel");
+    b.addEventListener("click", () => {
+      selectedTrack = it.name;
+      document.getElementById("trName").value = it.name;
+      renderTracks(items);
+    });
+    box.appendChild(b);
+  });
+}
+function batText(p) {
+  const bms = (p.chassis || {}).bms;
+  if (bms && bms.socPercent != null) return bms.socPercent + "%";
+  if (p.battery == null) return "—";
+  const n = Number(p.battery);
+  return n <= 1.5 ? Math.round(n * 100) + "%" : n.toFixed(0) + "%";
+}
+function toneClass(kind) {
+  return kind === "bad" ? "tone-bad" : kind === "warn" ? "tone-warn" : kind === "ok" ? "tone-ok" : "";
+}
+function powerTone(p) {
+  const sys = (p.chassis || {}).system || {};
+  const bms = (p.chassis || {}).bms || {};
+  const soc = bms.socPercent;
+  const v = sys.batteryVoltageV != null ? sys.batteryVoltageV : bms.voltageV;
+  if ((soc != null && soc <= 12) || (v != null && v < 24)) return "bad";
+  if ((soc != null && soc <= 20) || (v != null && v < 25)) return "warn";
+  if (soc != null || v != null) return "ok";
+  return "";
+}
+function kv(title, rows) {
+  const body = rows.map(([k, v, tone]) =>
+    "<tr><td>" + k + "</td><td class=\"" + toneClass(tone) + "\">" + (v == null || v === "" ? "—" : v) + "</td></tr>"
+  ).join("");
+  return "<div class=\"kv\"><h3>" + title + "</h3><table>" + body + "</table></div>";
+}
+function renderChassis(p) {
+  const box = document.getElementById("chassisBody");
+  if (!p) {
+    box.innerHTML = "<div class=\"kv\"><h3>暂无数据</h3><p class=\"hint\">还没收到工控机状态。点刷新，或确认 run_local 已重启。</p></div>";
+    return;
+  }
+  const ch = p.chassis || {};
+  const sys = ch.system || {};
+  const mot = ch.motion || {};
+  const odo = ch.odometer || {};
+  const bms = ch.bms || {};
+  const rc = ch.remote || {};
+  const can = p.can || {};
+  const pt = powerTone(p);
+  const faults = (sys.faults && sys.faults.length) ? sys.faults.join("；") : "无";
+  box.innerHTML = [
+    kv("电源 / BMS 0x361", [
+      ["SOC 电量", bms.socPercent != null ? bms.socPercent + " %" : batText(p), pt],
+      ["SOH 健康度", bms.sohPercent != null ? bms.sohPercent + " %" : "—"],
+      ["BMS 电压", bms.voltageV != null ? bms.voltageV.toFixed(2) + " V" : "—", pt],
+      ["电流", bms.currentA != null ? bms.currentA.toFixed(1) + " A" : "—"],
+      ["电池温度", bms.temperatureC != null ? bms.temperatureC.toFixed(1) + " °C" : "—"]
+    ]),
+    kv("系统状态 0x211", [
+      ["底盘心跳", ch.heard ? "已锁定" : "未收到 0x211", ch.heard ? "ok" : "bad"],
+      ["车体状态", sys.vehicleState || p.vehicleState, (sys.vehicleStateCode === 0 || p.vehicleStateCode === 0) ? "ok" : "warn"],
+      ["控制模式", sys.controlMode || p.mode, (sys.controlModeCode === 1 || p.modeCode === 1) ? "ok" : "warn"],
+      ["底盘电压", sys.batteryVoltageV != null ? sys.batteryVoltageV.toFixed(1) + " V" : "—", pt],
+      ["故障码", sys.faultHex || (p.faultCode != null ? "0x" + Number(p.faultCode).toString(16).toUpperCase() : "—"),
+        (sys.faults && sys.faults.length) ? "bad" : "ok"],
+      ["故障详情", faults, (sys.faults && sys.faults.length) ? "bad" : "ok"],
+      ["计数校验", sys.heartbeat]
+    ]),
+    kv("运动反馈 0x221", [
+      ["线速度", mot.linearMs != null ? mot.linearMs.toFixed(3) + " m/s" : (p.speed != null ? Number(p.speed).toFixed(3) + " m/s" : "—")],
+      ["角速度", mot.angularRads != null ? mot.angularRads.toFixed(3) + " rad/s" : "—"]
+    ]),
+    kv("里程计 0x311", [
+      ["左轮", odo.leftM != null ? odo.leftM.toFixed(3) + " m  (" + odo.leftMm + " mm)" : "—"],
+      ["右轮", odo.rightM != null ? odo.rightM.toFixed(3) + " m  (" + odo.rightMm + " mm)" : "—"],
+      ["融合来源", odo.source || "—"],
+      ["平均里程", p.odometer != null ? Number(p.odometer).toFixed(3) + " m" : "—"]
+    ]),
+    kv("CAN / 遥控", [
+      ["通道", (can.interface || "") + " " + (can.channel || "—")],
+      ["链路", can.link || "—", can.feedback ? "ok" : "bad"],
+      ["底盘反馈", can.feedback ? "有 0x211" : "无", can.feedback ? "ok" : "bad"],
+      ["手持遥控", rc.alive ? "在线" : "未开", rc.alive ? "warn" : "ok"],
+      ["SWB 指令档", rc.alive ? (rc.swbCommand ? "是" : "否") : "—"]
+    ])
+  ].join("");
+}
+function loadChassis() {
+  sendCmd("query", {});
+  send({t:"chassis"});
+  fetch("/chassis.json", {cache: "no-store"}).then(function (r) {
+    return r.ok ? r.json() : null;
+  }).then(function (m) {
+    if (m && m.payload) applyState(m.payload);
+  }).catch(function () {});
+}
+function chassisOpen() {
+  showPage("chassis");
+  log("查看底盘状态");
+}
+function chassisClose() {
+  document.getElementById("chassisModal").classList.remove("on");
+  showPage("home");
+}
+function applyState(p) {
+  if (!p || typeof p !== "object") return;
+  lastState = p;
+  const pose = p.pose || {};
+  document.getElementById("mPose").textContent =
+    (pose.x == null ? "—" : Number(pose.x).toFixed(2) + ", " + Number(pose.y).toFixed(2));
+  document.getElementById("mYaw").textContent = "yaw " + (pose.yaw == null ? "—" : Number(pose.yaw).toFixed(1) + "°");
+  document.getElementById("mSpeed").textContent = (p.speed == null ? "—" : Number(p.speed).toFixed(2) + " m/s");
+  document.getElementById("mMode").textContent = (p.mode || "mode —") + (p.vehicleState ? " · " + p.vehicleState : "");
+  const lidar = p.lidar || {};
+  document.getElementById("mLidar").textContent = lidar.online ? "在线" : "离线";
+  document.getElementById("mFront").textContent = "前方 " + (lidar.frontObstacle == null ? "—" : lidar.frontObstacle + " m");
+  const mission = p.mission || {};
+  const st = mission.status || "";
+  document.getElementById("mMission").textContent = MISSION_CN[st] || st || "空闲";
+  document.getElementById("mRec").textContent = p.recording ? "● 正在录制" : "未录制";
+  const batEl = document.getElementById("mBat");
+  batEl.textContent = batText(p);
+  batEl.className = "v " + toneClass(powerTone(p));
+  const can = p.can || {};
+  document.getElementById("mCan").textContent = (can.channel || "can?") + " · " + (can.link || "—") + (can.feedback ? " · 有反馈" : " · 无反馈");
+  if (currentPage() === "chassis") renderChassis(p);
+  applyDrive(p);
+  drawPose(p);
+  refreshPreviews();
+}
+function setDriveBar(tone, kind, detail) {
+  const bar = document.getElementById("driveBar");
+  bar.className = "drive-bar " + (tone || "idle");
+  document.getElementById("driveKind").textContent = kind;
+  document.getElementById("driveDetail").textContent = detail;
+}
+function applyDrive(p) {
+  const d = (p && p.drive) || {};
+  const kind = d.kind || "idle";
+  driveLocal = {kind: kind, remainS: (d.move && d.move.remainS), t0: performance.now(), detail: ""};
+  const lidarReady = d.lidarReady;
+  const lidarOn = d.lidarEnabled;
+  const btn = document.getElementById("btnGoto");
+  if (btn) btn.disabled = lidarOn && !lidarReady;
+  if (kind === "move" && d.move) {
+    const m = d.move;
+    const remain = m.remainS == null ? "—" : Number(m.remainS).toFixed(1) + "s";
+    setDriveBar("run", "开环 move 执行中",
+      "v=" + Number(m.v).toFixed(2) + " m/s  w=" + Number(m.w).toFixed(2) +
+      " rad/s  剩余 " + remain + (m.openLoop ? "  · 开环" : "") +
+      "。按 WASD 会接管并取消。");
+    return;
+  }
+  if (kind === "goto") {
+    const g = d.goto || {};
+    const target = (g.x == null || g.y == null)
+      ? "目标已下发"
+      : "目标 (" + Number(g.x).toFixed(2) + ", " + Number(g.y).toFixed(2) + ")";
+    setDriveBar("run", "导航 goto 执行中",
+      target + (g.distM == null ? "" : "  剩余 " + Number(g.distM).toFixed(2) + " m") +
+      "。按 WASD 会接管并取消。");
+    return;
+  }
+  if (kind === "mission" || kind === "replay") {
+    setDriveBar("run", DRIVE_CN[kind] || kind, "车侧自主运行中。按 WASD 会接管并取消。");
+    return;
+  }
+  if (lidarOn && !lidarReady) {
+    setDriveBar("warn", "空闲 · 雷达离线",
+      "goto / 探路会被拒绝；普通 move 也会被避障打成 0。先点「雷达开」等到在线，或勾选「开环（不过雷达）」/ 点「雷达关」。WASD 仍可开。");
+    return;
+  }
+  setDriveBar("idle", "空闲", "没有正在执行的 move / goto。");
+}
+function tickDrive() {
+  const d = (lastState && lastState.drive) || {};
+  if ((d.kind || "idle") !== "move" || !d.move || d.move.remainS == null) return;
+  const left = Math.max(0, Number(d.move.remainS) - (performance.now() - driveLocal.t0) / 1000);
+  document.getElementById("driveDetail").textContent =
+    "v=" + Number(d.move.v).toFixed(2) + " m/s  w=" + Number(d.move.w).toFixed(2) +
+    " rad/s  剩余 " + left.toFixed(1) + "s" + (d.move.openLoop ? "  · 开环" : "") +
+    "。按 WASD 会接管并取消。";
+}
+function refreshPreviews() {
+  const pose = (lastState && lastState.pose) || {};
+  const px = Number(pose.x), py = Number(pose.y);
+  const hasPose = Number.isFinite(px) && Number.isFinite(py);
+  const v = num("mv"), w = num("mw"), dur = num("md");
+  const mp = document.getElementById("movePreview");
+  if (v == null || w == null) {
+    mp.textContent = "填写 v / w / 秒。正 v 前进，负 v 后退；正 w 左转。";
+  } else {
+    const t = (dur == null || dur <= 0) ? 2 : dur;
+    const approx = v * t;
+    mp.textContent = "预计开环位移 ≈ " + approx.toFixed(2) + " m（" +
+      (v >= 0 ? "前进" : "后退") + "）· 持续 " + t.toFixed(1) + "s" +
+      (Math.abs(w) > 1e-6 ? " · 同时旋转" : "") +
+      "。不保证停在某个坐标。";
+  }
+  const gx = num("gx"), gy = num("gy");
+  const gp = document.getElementById("gotoPreview");
+  if (gx == null || gy == null) {
+    gp.textContent = "填写世界坐标 x / y。先看左边图上的绿点。";
+  } else if (hasPose) {
+    const dist = Math.hypot(gx - px, gy - py);
+    gp.textContent = "从当前位置 (" + px.toFixed(2) + ", " + py.toFixed(2) +
+      ") 到 (" + gx.toFixed(2) + ", " + gy.toFixed(2) + ")，直线 " +
+      dist.toFixed(2) + " m。雷达必须在线。";
+  } else {
+    gp.textContent = "目标 (" + gx.toFixed(2) + ", " + gy.toFixed(2) + ")。等工控机位姿后再算距离。";
+  }
+}
+function drawPose(p) {
+  const c = document.getElementById("poseCanvas");
+  if (!c) return;
+  const ctx = c.getContext("2d");
+  const W = c.width, H = c.height;
+  ctx.clearRect(0, 0, W, H);
+  const pose = (p && p.pose) || {};
+  const px = Number(pose.x) || 0, py = Number(pose.y) || 0;
+  const yaw = (Number(pose.yaw) || 0) * Math.PI / 180;
+  const drive = (p && p.drive) || {};
+  const gx = drive.goto ? Number(drive.goto.x) : num("gx");
+  const gy = drive.goto ? Number(drive.goto.y) : num("gy");
+  const pts = [[0,0],[px,py]];
+  if (gx != null && gy != null) pts.push([gx, gy]);
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  pts.forEach(([x,y]) => { minX=Math.min(minX,x); maxX=Math.max(maxX,x); minY=Math.min(minY,y); maxY=Math.max(maxY,y); });
+  const pad = 1.2;
+  minX -= pad; maxX += pad; minY -= pad; maxY += pad;
+  const span = Math.max(maxX - minX, maxY - minY, 2.4);
+  const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
+  const toXY = (x, y) => [
+    W/2 + (x - cx) / span * (W - 28),
+    H/2 - (y - cy) / span * (H - 28)
+  ];
+  ctx.strokeStyle = "#243140";
+  ctx.lineWidth = 1;
+  for (let m = Math.floor(cx - span); m <= Math.ceil(cx + span); m++) {
+    const a = toXY(m, cy - span), b = toXY(m, cy + span);
+    ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke();
+  }
+  for (let m = Math.floor(cy - span); m <= Math.ceil(cy + span); m++) {
+    const a = toXY(cx - span, m), b = toXY(cx + span, m);
+    ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke();
+  }
+  const o = toXY(0, 0);
+  ctx.fillStyle = "#f0c14b";
+  ctx.beginPath(); ctx.arc(o[0], o[1], 4, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = "#8b9aab";
+  ctx.font = "11px ui-monospace, Menlo, sans-serif";
+  ctx.fillText("原点", o[0] + 6, o[1] - 6);
+  if (gx != null && gy != null) {
+    const g = toXY(gx, gy);
+    const from = toXY(px, py);
+    ctx.strokeStyle = "#3dd68c";
+    ctx.setLineDash([4, 3]);
+    ctx.beginPath(); ctx.moveTo(from[0], from[1]); ctx.lineTo(g[0], g[1]); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = "#3dd68c";
+    ctx.beginPath(); ctx.arc(g[0], g[1], 5, 0, Math.PI*2); ctx.fill();
+    ctx.fillText("(" + Number(gx).toFixed(1) + "," + Number(gy).toFixed(1) + ")", g[0] + 7, g[1] + 4);
+  }
+  const r = toXY(px, py);
+  ctx.save();
+  ctx.translate(r[0], r[1]);
+  ctx.rotate(-yaw);
+  ctx.fillStyle = "#5ec8ff";
+  ctx.beginPath();
+  ctx.moveTo(10, 0); ctx.lineTo(-7, 6); ctx.lineTo(-7, -6); ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+}
+function connect() {
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  ws = new WebSocket(proto + "://" + location.host + "/ws");
+  ws.onopen = () => {
+    setLink(true, "点本页后按 WASD");
+    stickNow();
+    send({t:"tracks"});
+    loadChassis();
+  };
+  ws.onclose = () => { setLink(false, "重连中"); setTimeout(connect, 800); };
+  ws.onerror = () => {};
+  ws.onmessage = (ev) => {
+    try {
+      const m = JSON.parse(ev.data);
+      if (m.t === "p" && typeof m.t0 === "number") rtt = performance.now() - m.t0;
+      if (m.t === "ack") {
+        applied = "v=" + Number(m.v).toFixed(2) + " w=" + Number(m.w).toFixed(2);
+        document.getElementById("warnTxt").textContent = m.warn || "";
+      }
+      if (m.t === "state") applyState(m.payload || {});
+      if (m.t === "event") {
+        const p = m.payload || {};
+        if (p.event === "chassis") {
+          let data = p.data;
+          if (!data && p.msg) { try { data = JSON.parse(p.msg); } catch (e) { data = null; } }
+          if (data) {
+            const next = Object.assign({}, lastState || {}, {chassis: data});
+            if (data.system) {
+              if (data.system.controlMode) next.mode = data.system.controlMode;
+              if (data.system.vehicleState) next.vehicleState = data.system.vehicleState;
+            }
+            if (data.bms && data.bms.socPercent != null) next.battery = data.bms.socPercent / 100;
+            applyState(next);
+          }
+        } else {
+          log((p.event || "event") + " — " + (p.msg || ""));
+          if (p.event === "arrived" || p.event === "track_record" || p.event === "track_follow") send({t:"tracks"});
+        }
+      }
+      if (m.t === "cmd_ok") log("工控机已收 " + (m.action || "cmd"));
+      if (m.t === "cmd_err") log("指令失败 " + (m.action || "") + " " + (m.msg || ""));
+      if (m.t === "tracks") renderTracks(m.items || []);
+      if (m.t === "view") log(m.msg || ("窗口 " + m.mode));
+    } catch (e) {}
+  };
+}
+function setKey(code, isDown, ev) {
+  if (typing()) return false;
+  const k = CODE[code];
+  if (k) { down[k] = isDown; if (ev) ev.preventDefault(); paint(); return true; }
+  if (code === "Space") { down.space = isDown; if (ev) ev.preventDefault(); return true; }
+  if (isDown && (code === "Equal" || code === "NumpadAdd")) {
+    vStep = Math.min(0.50, vStep + 0.01); wStep = Math.min(1.00, wStep + 0.02); paint(); return true;
+  }
+  if (isDown && (code === "Minus" || code === "NumpadSubtract")) {
+    vStep = Math.max(0.05, vStep - 0.01); wStep = Math.max(0.10, wStep - 0.02); paint(); return true;
+  }
+  return false;
+}
+function bindPad(id, key) {
+  const el = document.getElementById(id);
+  const on = (e) => { e.preventDefault(); down[key] = true; paint(); stickNow(); };
+  const off = (e) => { e.preventDefault(); down[key] = false; paint(); stickNow(); };
+  el.addEventListener("pointerdown", on);
+  el.addEventListener("pointerup", off);
+  el.addEventListener("pointercancel", off);
+  el.addEventListener("pointerleave", off);
+}
+["kw","ka","ks","kd"].forEach((id, i) => bindPad(id, "wasd"[i]));
+document.getElementById("btnEstop").addEventListener("click", () => { send({t:"e"}); log("ESTOP"); });
+document.getElementById("btnChassis").addEventListener("click", chassisOpen);
+document.getElementById("cardBat").addEventListener("click", chassisOpen);
+document.getElementById("btnChassisRefresh").addEventListener("click", () => { loadChassis(); log("刷新底盘状态"); });
+document.getElementById("btnChassisClose").addEventListener("click", chassisClose);
+document.getElementById("chassisModal").addEventListener("click", (e) => {
+  if (e.target.id === "chassisModal") chassisClose();
+});
+document.addEventListener("keydown", (e) => {
+  if (e.code === "Escape") chassisClose();
+});
+document.getElementById("btnPlus").addEventListener("click", () => { vStep = Math.min(0.50, vStep + 0.01); wStep = Math.min(1.00, wStep + 0.02); paint(); });
+document.getElementById("btnMinus").addEventListener("click", () => { vStep = Math.max(0.05, vStep - 0.01); wStep = Math.max(0.10, wStep - 0.02); paint(); });
+document.querySelectorAll("[data-act]").forEach((btn) => {
+  btn.addEventListener("click", () => handleAct(btn.getAttribute("data-act")));
+});
+["mv","mw","md","gx","gy"].forEach((id) => {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.addEventListener("input", () => { refreshPreviews(); drawPose(lastState || {}); });
+});
+document.querySelectorAll("[data-move]").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    const parts = btn.getAttribute("data-move").split(",");
+    document.getElementById("mv").value = parts[0];
+    document.getElementById("mw").value = parts[1];
+    document.getElementById("md").value = parts[2];
+    refreshPreviews();
+    handleAct("move");
+  });
+});
+document.querySelectorAll("[data-goto]").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    const parts = btn.getAttribute("data-goto").split(",");
+    document.getElementById("gx").value = parts[0];
+    document.getElementById("gy").value = parts[1];
+    refreshPreviews();
+    drawPose(lastState || {});
+    handleAct("goto");
+  });
+});
+document.querySelectorAll("[data-goto-rel]").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    const parts = btn.getAttribute("data-goto-rel").split(",").map(Number);
+    const pose = (lastState && lastState.pose) || {};
+    const x0 = Number(pose.x) || 0, y0 = Number(pose.y) || 0;
+    const yaw = (Number(pose.yaw) || 0) * Math.PI / 180;
+    const fx = parts[0] || 0, fy = parts[1] || 0;
+    const x = x0 + fx * Math.cos(yaw) - fy * Math.sin(yaw);
+    const y = y0 + fx * Math.sin(yaw) + fy * Math.cos(yaw);
+    document.getElementById("gx").value = x.toFixed(2);
+    document.getElementById("gy").value = y.toFixed(2);
+    refreshPreviews();
+    drawPose(lastState || {});
+    handleAct("goto");
+  });
+});
+document.addEventListener("keydown", (e) => {
+  if (e.repeat) { if (!typing() && (CODE[e.code] || e.code === "Space")) e.preventDefault(); return; }
+  if (setKey(e.code, true, e)) stickNow();
+  setLink(!!(ws && ws.readyState === 1));
+});
+document.addEventListener("keyup", (e) => {
+  if (setKey(e.code, false, e)) {
+    stickNow();
+    if (!down.w && !down.a && !down.s && !down.d) {
+      send({t:"s", v:0, w:0});
+    }
+  }
+  setLink(!!(ws && ws.readyState === 1));
+});
+window.addEventListener("blur", () => {
+  down.w = down.a = down.s = down.d = down.space = false; paint(); send({t:"s", v:0, w:0});
+});
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) {
+    down.w = down.a = down.s = down.d = down.space = false; paint(); send({t:"s", v:0, w:0});
+  }
+});
+document.addEventListener("focusin", (e) => {
+  if (typing()) {
+    down.w = down.a = down.s = down.d = false; paint(); send({t:"s", v:0, w:0});
+  }
+});
+setInterval(() => {
+  stickNow();
+  const now = performance.now();
+  if (now - lastHz >= 1000) {
+    hz = n;
+    n = 0;
+    lastHz = now;
+    if (ws && ws.readyState === 1) send({t:"p", t0: now});
+  }
+  setLink(!!(ws && ws.readyState === 1));
+  paint();
+  tickDrive();
+}, 10);
+paint();
+refreshPreviews();
+drawPose({});
+window.addEventListener("hashchange", () => showPage(currentPage(), false));
+showPage(currentPage(), false);
+connect();
+</script>
+</body>
+</html>

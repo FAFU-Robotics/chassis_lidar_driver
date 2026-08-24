@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# 日志
+*.log
+
+# 备份文件
+*.bak
+*.*_bak
+*.2026*
+
+# 系统 / 编辑器
+.DS_Store
