@@ -1,0 +1,57 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# 日志
+*.log
+
+# 备份文件
+*.bak
+*.*_bak
+*.2026*
+
+# 内核模块编译产物 (gs_usb_kmod)
+*.o
+*.ko
+*.mod
+*.mod.c
+*.mod.o
+Module.symvers
+modules.order
+.*.cmd
+
+# 系统 / 编辑器
+.DS_Store
+
+# 运行时地图截图（现场生成，不是源码）
+bunker_jetson/maps/*.png
+
+# 组员目录里的临时对照文件
+robosense_airy/*.before_tab_fix
+
+# ------------------------------------------------------------
+# 已废弃的云端模式（本地磁盘仍保留，不上传）
+# 日常入口是仓库根目录 python3 run_local.py
+# 不要把 run_agent.py / agent.py / teleop_web.* 算进云端：
+# 它们是 run_local 的 --local / :9100 / :9101 通路。
+# ------------------------------------------------------------
+run_mission.py
+start_mission.sh
+mission.conf
+bunker_jetson/mock_cloud.py
+bunker_jetson/start_agent.sh
+bunker_jetson/hid_kb_client.py
+
+# 只测 mock_cloud / 旧 WebSocket 云端的测试
+bunker_jetson/test/_ws_test.py
+bunker_jetson/test/_yn_pty_test.py
+bunker_jetson/test/_rewind_pty_test.py
+bunker_jetson/test/_kb_pty_test.py
+bunker_jetson/test/_kb_combo_test.py
+bunker_jetson/test/_agent_integration_test.py
+bunker_jetson/tests/test_live_viewer_display.py
+bunker_jetson/tests/test_kb_release_hold.py
+bunker_jetson/tests/test_hid_stick.py
+bunker_jetson/tests/test_reconnect_backoff.py

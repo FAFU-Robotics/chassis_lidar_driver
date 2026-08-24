@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "mission": null,
+  "pose": null,
+  "reconTrack": null,
+  "failsafe": {
+    "link": "healthy",
+    "rxAgeS": null,
+    "rttMs": null,
+    "power": "ok",
+    "lastReject": null,
+    "bootInterrupt": false
+  },
+  "reason": "shutdown",
+  "saved_at": "2026-08-21T10:55:37"
+}

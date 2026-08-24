@@ -1,0 +1,16 @@
+python-can>=4.3
+pyserial>=3.5
+websocket-client>=1.6
+# 本地「模拟云端」自测工具 (mock_cloud.py) 需要:
+websockets>=12.0
+# kb / 遥控：终端 termios 只能猜松键。真双轴请在【插键盘的那台电脑】装 HID：
+#   Linux: pip install evdev
+#   Windows: pip install keyboard
+# 然后跑 teleop_tcp_client.py，或在本机非 SSH 终端用 run_local 的 kb。
+# candleLight / gs_usb support (Windows 专用):
+#   pip install "python-can[gs_usb]"
+# PCAP 离线回放：默认纯标准库解析，无需额外依赖；
+# 若装 scapy 则自动用 scapy 后端（速度更快，可选）:
+#   pip install scapy
+# matplotlib 用于 ascii_view 的点云 PNG 截图（view_lidar / mock_cloud 的 view 命令）
+matplotlib>=3.5
