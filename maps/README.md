@@ -1,5 +1,7 @@
 # maps/ 目录说明
 
+MOLA mapping / localization assets for Airy. Do not edit ICP/TF in `pipelines/` or `mola_lo.rviz`.
+
 建图与定位相关文件。不要改 `pipelines/lidar3d-icp-airy.yaml`、不要改 `mola_lo.rviz` 里的 ICP/TF 数值。
 
 ## 目录

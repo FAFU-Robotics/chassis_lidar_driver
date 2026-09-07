@@ -1,5 +1,7 @@
 # nav_demo — 真实感知 → 栅格 → A* → Navigator dry-run
 
+Live perception → occupancy grid → A* dry-run. Default: no CAN / no stick.
+
 本目录只做挑战杯 Demo / PPT。**不修改**正式 MOLA / SDK / ICP / TF / YAML / `occupancy.py` / `global_planner.py` / `navigator.py` / `obstacle.py`。
 
 **当前禁止（未获你明确允许之前）：** `stick`、CAN 发送、真实底盘运动、`run_obstacle_avoidance.py`、第二条 CAN、Nav2。
