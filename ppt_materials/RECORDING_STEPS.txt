@@ -1,5 +1,6 @@
 挑战杯 PPT 现场录制步骤
 ================================
+Manual PPT capture only. Scripts never send stick / CAN.
 本文件只指导你手动录制。脚本不会开车、不会发 stick。
 不修改正式 YAML / SDK / MOLA / ICP / TF。
 不覆盖 maps/mola_lo.rviz。
