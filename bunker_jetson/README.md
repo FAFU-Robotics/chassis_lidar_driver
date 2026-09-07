@@ -1,5 +1,7 @@
 # BUNKER MINI 2.0 CAN 控制
 
+Car-side agent (CAN, lidar, tracks, navigation). Start from the repo root: `python3 run_local.py`.
+
 > **Jetson / Linux 用户请看 [`使用说明.md`](使用说明.md)** —— 本文件保留自 Windows
 > 参考项目（`bunker_mini_can_control`），部分示例为 Windows 命令。
 > Jetson 日常入口在**仓库根目录** `python3 run_local.py`，不要再开本目录的

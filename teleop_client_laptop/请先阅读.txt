@@ -1,5 +1,6 @@
 Bunker 控制台 — 笔记本桌面客户端
 ================================
+Copy this folder to the laptop. Double-click 打开网页控制台.bat after bunker-local / run_local is up.
 
 这个文件夹要拷到【笔记本本地硬盘】。不要在 Cursor 远程工程里双击。
 

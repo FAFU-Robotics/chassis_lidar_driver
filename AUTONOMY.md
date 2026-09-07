@@ -1,5 +1,7 @@
 # 建图 + 自主导航（不再做 PPT）
 
+Mapping and autonomy entry: `bash nav_demo/scripts/autonomy.sh`. Motion requires `--i-allow-motion`.
+
 入口只有一个：
 
 ```bash

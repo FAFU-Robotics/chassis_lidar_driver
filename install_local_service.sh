@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Install bunker-local.service (headless :9100 + :9101 on boot).
 # 安装并（默认）启用 bunker-local.service：开机后台开 :9100 + :9101。
 # 不开雷达驱动、不弹桌面窗。笔记本用 teleop_client_laptop/ 双击打开网页。
 #
