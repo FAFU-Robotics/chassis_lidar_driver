@@ -1,0 +1,51 @@
+{
+  "start_wall": "2026-09-03 21:02:26",
+  "end_wall": "2026-09-03 21:05:06",
+  "motion_start_rel_s": 59.023,
+  "last_mola_pose_update_rel_s": 89.432,
+  "pose_frozen_before_operator_stop_s": 71.6,
+  "start_pose": {
+    "x": 0.002,
+    "y": -0.001,
+    "yaw_deg": -0.01,
+    "quality": 0.969
+  },
+  "end_pose_last_published": {
+    "x": 3.433,
+    "y": -0.041,
+    "yaw_deg": -79.24,
+    "quality": 0.509
+  },
+  "disp_m": 3.431,
+  "path_length_m": 3.758,
+  "x_range_m": [
+    -0.0,
+    3.433
+  ],
+  "y_range_m": [
+    -0.041,
+    0.337
+  ],
+  "yaw_range_deg": [
+    -79.24,
+    0.03
+  ],
+  "quality": {
+    "min": 0.509,
+    "max": 0.986,
+    "avg": 0.92,
+    "last": 0.509
+  },
+  "localmap_points": {
+    "start": 1287,
+    "end": 1685,
+    "delta": 398,
+    "keyframe_updates": 2
+  },
+  "icp_failure_count": 0,
+  "lidar_hz_end_approx": 10.0,
+  "pose_hz_end": 0.0,
+  "tf_map_base_link": "present",
+  "rviz_screenshot": null,
+  "data_dir": "/home/fafu_robot/Desktop/chassis_lidar_drivers/ppt_materials/generated/mola_mapping_20260903"
+}

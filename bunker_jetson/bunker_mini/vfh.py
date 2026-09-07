@@ -63,16 +63,16 @@ class VFHConfig:
 
     sector_count: int = 72           # 极坐标直方图分辨率（5° 一格）
     clear_distance_m: float = 1.0    # 该方向障碍距离 ≥ 此值 → 视为「缺口/开放」
-    vehicle_width_m: float = 0.36    # 车宽（BUNKER MINI 2.0 履带外侧）
-    safety_margin_m: float = 0.20    # 缺口两侧额外安全余量（每侧）
+    vehicle_width_m: float = 0.57    # 车宽（实车履带外侧 570 mm）
+    safety_margin_m: float = 0.08    # 缺口两侧额外安全余量（每侧；勿在 0.57 车上再加 0.20）
     max_range_m: float = 5.0         # 探测距离上限（无回波视为开阔）
     # --- 评分权重 ---
     forward_bias_m: float = 0.5      # 前向方向的「距离当量」加成（少转向）
     goal_bias_deg: float = 0.0       # 目标航向一致性权重（度误差折算距离当量，0=关）
     # --- 速度自适应安全距离（制动距离建模） ---
-    stop_base_m: float = 0.25        # 静止时的急停距离
+    stop_base_m: float = 0.35        # 静止时的急停距离（立障；坑用 ObstaclePolicy.pit_stop_m）
     stop_per_v: float = 0.6          # 每 1 m/s 增加的急停距离（秒当量）
-    slow_base_m: float = 0.8         # 静止时的限速距离
+    slow_base_m: float = 0.90        # 静止时的限速距离
     slow_per_v: float = 1.2          # 每 1 m/s 增加的限速距离
 
 

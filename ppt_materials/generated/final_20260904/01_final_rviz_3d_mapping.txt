@@ -1,0 +1,9 @@
+01_final_rviz_3d_mapping.png
+Captured: 2026-09-04 ~15:53 after human teleop mapping
+Real RViz screenshot: YES (window of ppt_live_final.rviz)
+Source session: teleop_map/ (15:47:49–15:53)
+
+Topics: /rslidar_points (gray) + /lidar_odometry/localmap_points (gold) + pose axes
+LocalMap at capture: 3048 pts (start 1704)
+No matplotlib / AI fill. No CAN from logger.
+Note: pose froze ~t=308s (last published pose kept). ICP fail_n=0 during this run.

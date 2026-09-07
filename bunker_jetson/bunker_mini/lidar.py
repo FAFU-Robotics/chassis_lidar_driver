@@ -25,6 +25,7 @@ Linux/Jetson 通用，输出：
 
 from __future__ import annotations
 
+import errno
 import logging
 import math
 import select
@@ -190,6 +191,39 @@ class LidarError(RuntimeError):
     """Raised when the LiDAR cannot be initialized (e.g. UDP port busy)."""
 
 
+def msop_udp_bound(port: int = MSOP_PORT) -> bool:
+    """True when any process already holds UDP ``port`` (IPv4 or IPv6).
+
+    Airy MSOP is unicast; two binds split or steal the stream. Probe
+    ``/proc/net/udp{,6}`` first so a specific-IP bind (``192.168.1.102:6699``)
+    is still detected. Fall back to a non-reuse bind of ``0.0.0.0:port``.
+    """
+    want = f"{int(port):04X}"
+    for proc in ("/proc/net/udp", "/proc/net/udp6"):
+        try:
+            with open(proc, encoding="ascii") as fh:
+                next(fh, None)
+                for line in fh:
+                    cols = line.split()
+                    if len(cols) < 2:
+                        continue
+                    local = cols[1]
+                    if ":" not in local:
+                        continue
+                    if local.rsplit(":", 1)[-1].upper() == want:
+                        return True
+        except OSError:
+            continue
+    probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        probe.bind(("0.0.0.0", int(port)))
+        return False
+    except OSError as exc:
+        return getattr(exc, "errno", None) == errno.EADDRINUSE
+    finally:
+        probe.close()
+
+
 @dataclass(frozen=True)
 class LidarPoint:
     """A single measured point in the LiDAR / vehicle frame."""
@@ -297,17 +331,18 @@ class SelfMaskConfig:
     """Self-scan hardware filter — remove mount-bracket / cable clutter (C 迁移).
 
     组员代码用固定外接框滤除雷达安装支架产生的固定点（这些点稳定出现在
-    车体近前、左右对称，若进扇区图/地形会形成固定误检）。区域默认值取
-    组员标定：|x|∈[0.05,0.25], y∈[0.20,0.45], z∈[0.20,0.36]（米，车体系）。
+    车体近前、左右对称，若进扇区图/地形会形成固定误检）。实车雷达在车头
+    正中、略高出车顶（约 0.35 m AGL）：自扫在保险杠/前唇一带，不是旧的
+    车顶支架盒子 |x|∈[0.05,0.25], y∈[0.20,0.45], z∈[0.20,0.36]。
     """
 
     enabled: bool = True
-    x_abs_min_m: float = 0.05
-    x_abs_max_m: float = 0.25
-    y_min_m: float = 0.20
-    y_max_m: float = 0.45
-    z_min_m: float = 0.20
-    z_max_m: float = 0.36
+    x_abs_min_m: float = 0.0
+    x_abs_max_m: float = 0.20
+    y_min_m: float = 0.0
+    y_max_m: float = 0.16
+    z_min_m: float = 0.05
+    z_max_m: float = 0.28
 
 
 def filter_self_hardware(
@@ -601,6 +636,7 @@ class AiryLidar:
     """
 
     NO_DATA_STALE_S: float = 0.4  # 超过该秒数未收到帧视为雷达离线（~10Hz 丢 4 帧）
+    source: str = "udp"
 
     def __init__(
         self,

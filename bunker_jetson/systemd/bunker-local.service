@@ -1,0 +1,27 @@
+[Unit]
+Description=Bunker Mini local console (agent :9100 + web :9101, headless)
+Documentation=file:///home/fafu_robot/Desktop/chassis_lidar_drivers/使用说明.md
+After=network-online.target
+Wants=network-online.target
+# 旧的「只要遥控」服务会抢 :9100，不能和本单元一起开
+Conflicts=bunker-teleop.service
+
+[Service]
+Type=simple
+User=fafu_robot
+Group=fafu_robot
+WorkingDirectory=/home/fafu_robot/Desktop/chassis_lidar_drivers
+Environment=PYTHONUNBUFFERED=1
+Environment=BUNKER_MAP_VIEW=0
+Environment=BUNKER_ENABLE_LIDAR=0
+# 不把桌面 DISPLAY 传给进程，避免 matplotlib / 雷达窗挤占现有界面
+UnsetEnvironment=DISPLAY WAYLAND_DISPLAY XAUTHORITY
+# 安装脚本会把 Python 路径写成当前用户的解释器（本机一般为 miniconda）
+ExecStart=/home/fafu_robot/miniconda3/bin/python3 /home/fafu_robot/Desktop/chassis_lidar_drivers/run_local.py --daemon --no-lidar
+Restart=on-failure
+RestartSec=5
+KillSignal=SIGINT
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,114 @@
+# PPT-only TEMP view for "3D spatial model" slide.
+# Do not overwrite ppt_live.rviz or maps/mola_lo.rviz. Do not Save from RViz.
+# LocalMap + LidarPose only. No occupancy grid, no A*, no deskew, no TF.
+Panels: []
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Alpha: 0.95
+      Autocompute Intensity Bounds: true
+      Autocompute Value Bounds:
+        Max Value: 2.4
+        Min Value: -0.2
+        Value: true
+      Axis: Z
+      Channel Name: z
+      Class: rviz_default_plugins/PointCloud2
+      Color: 186; 176; 150
+      Color Transformer: AxisColor
+      Decay Time: 0
+      Enabled: true
+      Invert Rainbow: false
+      Max Color: 255; 255; 255
+      Min Color: 0; 0; 0
+      Name: LocalMap
+      Position Transformer: XYZ
+      Selectable: true
+      Size (Pixels): 3
+      Size (m): 0.055
+      Style: Points
+      Topic:
+        Depth: 5
+        Durability Policy: Transient Local
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /lidar_odometry/localmap_points
+      Use Fixed Frame: true
+      Use rainbow: true
+      Value: true
+    - Angle Tolerance: 0.05
+      Class: rviz_default_plugins/Odometry
+      Covariance:
+        Orientation:
+          Value: false
+        Position:
+          Value: false
+        Value: false
+      Enabled: true
+      Keep: 25
+      Name: LidarPose
+      Position Tolerance: 0.03
+      Shape:
+        Alpha: 1
+        Axes Length: 0.55
+        Axes Radius: 0.045
+        Color: 255; 90; 50
+        Head Length: 0.18
+        Head Radius: 0.08
+        Shaft Length: 0.42
+        Shaft Radius: 0.045
+        Value: Axes
+      Topic:
+        Depth: 5
+        Durability Policy: Transient Local
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /lidar_odometry/pose
+      Value: true
+  Enabled: true
+  Global Options:
+    Background Color: 8; 8; 10
+    Fixed Frame: map
+    Frame Rate: 20
+  Name: root
+  Tools:
+    - Class: rviz_default_plugins/Interact
+      Hide Inactive Objects: true
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/FocusCamera
+    - Class: rviz_default_plugins/Measure
+      Line color: 128; 128; 0
+  Transformation:
+    Current:
+      Class: rviz_default_plugins/TF
+  Value: true
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Distance: 9.5
+      Enable Stereo Rendering:
+        Stereo Eye Separation: 0.06
+        Stereo Focal Distance: 1
+        Swap Stereo Eyes: false
+        Value: false
+      Focal Point:
+        X: 4.0
+        Y: -2.3
+        Z: 0.35
+      Focal Shape Fixed Size: true
+      Focal Shape Size: 0.05
+      Invert Z Axis: false
+      Name: Current View
+      Near Clip Distance: 0.01
+      Pitch: 0.92
+      Target Frame: <Fixed Frame>
+      Value: Orbit (rviz_default_plugins)
+      Yaw: 0.95
+    Saved: ~
+Window Geometry:
+  Height: 560
+  Hide Left Dock: true
+  Hide Right Dock: true
+  Width: 780
+  X: 10
+  Y: 24

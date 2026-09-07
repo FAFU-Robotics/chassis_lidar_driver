@@ -152,8 +152,10 @@ _IDLE_W_RAD_S: float = 0.03
 _CURVE_W_RAD_S: float = 0.08
 _CURVE_MAX_TIME_S: float = 0.08
 _CURVE_DIST_MM: float = 20.0
-# 当前轨迹文件 schema：2 = 带 odometer_source / drive_mode，回放用段内 v/w。
-TRACK_SCHEMA_VERSION: int = 2
+# 当前轨迹文件 schema：3 = 2 + 录制起点里程系位姿（倒放后精停用）。
+TRACK_SCHEMA_VERSION: int = 3
+# 可用于「必须回原点」的里程来源：真实 0x311，或 0x311+0x221 融合。
+_RETURN_OK_ODO_SOURCES = frozenset({"real", "fused"})
 
 
 def _is_idle(v: float, w: float) -> bool:
@@ -279,6 +281,11 @@ class Track:
     sample_mode: str = "fixed"              # "fixed" | "adaptive"
     odometer_source: str = "unknown"        # real / fused / synthetic / mixed
     drive_mode: str = "unknown"             # kb / remote / unknown
+    # 录制开始时的里程系位姿（agent 启动原点或上次 odom_reset）。
+    # 倒放只保证轮脉冲对上；精停用这组坐标做 goto + 航向。
+    start_x: Optional[float] = None
+    start_y: Optional[float] = None
+    start_yaw_deg: Optional[float] = None
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), ensure_ascii=False, indent=2)
@@ -315,6 +322,9 @@ class Track:
             sample_mode=self.sample_mode,
             odometer_source=self.odometer_source,
             drive_mode=self.drive_mode,
+            start_x=self.start_x,
+            start_y=self.start_y,
+            start_yaw_deg=self.start_yaw_deg,
         )
 
     @classmethod
@@ -365,7 +375,80 @@ class Track:
             sample_mode=str(data.get("sample_mode", "fixed")),
             odometer_source=str(data.get("odometer_source", "unknown")),
             drive_mode=str(data.get("drive_mode", "unknown")),
+            start_x=_opt_float("start_x"),
+            start_y=_opt_float("start_y"),
+            start_yaw_deg=_opt_float("start_yaw_deg"),
         )
+
+
+def track_has_wheel_odo(track: Track) -> bool:
+    """轨迹里左右轮毫米是否真的走过（有 0x311 一类位移，而不是全 0）。"""
+    wps = track.waypoints
+    if len(wps) < 2:
+        return False
+    first = wps[0]
+    return any(
+        w.left_mm != first.left_mm or w.right_mm != first.right_mm
+        for w in wps[1:]
+    )
+
+
+def track_origin_quality(track: Track) -> dict:
+    """这条轨迹能不能当「必须回到录制起点」用。
+
+    ``ok``       可以倒放（有轮式里程且来源不是 synthetic）。
+    ``dock_ok``  倒放后还能用录制起点做里程系精停。
+    """
+    has_odo = track_has_wheel_odo(track)
+    src = (track.odometer_source or "unknown").strip().lower() or "unknown"
+    has_start = track.start_x is not None and track.start_y is not None
+    reasons: list[str] = []
+    if not has_odo:
+        reasons.append("no_wheel_odo")
+    if src == "synthetic":
+        reasons.append("odometer_source=synthetic")
+    elif src in ("unknown", "none", ""):
+        reasons.append(f"odometer_source={src or 'unknown'}")
+    elif src == "mixed":
+        reasons.append("odometer_source=mixed")
+    if not has_start:
+        reasons.append("no_start_pose")
+    ok = has_odo and src != "synthetic"
+    return {
+        "ok": ok,
+        "dock_ok": ok and has_start,
+        "has_odo": has_odo,
+        "odometer_source": src,
+        "drive_mode": track.drive_mode or "unknown",
+        "has_start_pose": has_start,
+        "reasons": reasons,
+    }
+
+
+def track_web_summary(track: Track) -> dict:
+    """网页轨迹列表用的摘要（含能否回原点）。"""
+    q = track_origin_quality(track)
+    start = None
+    if track.start_x is not None and track.start_y is not None:
+        start = {
+            "x": round(float(track.start_x), 3),
+            "y": round(float(track.start_y), 3),
+            "yawDeg": None if track.start_yaw_deg is None
+            else round(float(track.start_yaw_deg), 1),
+        }
+    return {
+        "name": track.name,
+        "duration": round(float(track.total_duration_s), 2),
+        "waypoints": len(track.waypoints),
+        "odometerSource": q["odometer_source"],
+        "driveMode": q["drive_mode"],
+        "hasOdo": q["has_odo"],
+        "returnOk": q["ok"] and q["odometer_source"] in _RETURN_OK_ODO_SOURCES,
+        "dockOk": q["dock_ok"],
+        "reasons": q["reasons"],
+        "startPose": start,
+        "distanceM": track.total_distance_m,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -725,8 +808,10 @@ class TrackPlayer:
         # a time-based replay finishing does NOT mean the chassis returned
         # to the start pose.
         self._last_playback_had_odo: bool = False
+        self._last_playback_stalled_wps: int = 0
+        self._last_playback_time_fallback: bool = False
         self._aborted_by_guard: bool = False
-        # 反向回放（B / fb 回程）：第一拍常被车头近障误刹，不能整段 abort。
+        # 反向回放（B / fb 回程）加长守卫观察窗；被挡则中止，不再 skip 航点装到达。
         self._reverse_play: bool = False
         # 已录轨迹是固定轮迹：B / f / fb 回放不过雷达守卫。
         self._bypass_guard: bool = False
@@ -918,6 +1003,18 @@ class TrackPlayer:
         physically returned to the start pose."""
         with self._lock:
             return self._last_playback_had_odo
+
+    @property
+    def last_playback_stalled_wps(self) -> int:
+        """最近一次回放未覆盖的航点数（含倒放被挡中止前已计的 stall）。"""
+        with self._lock:
+            return self._last_playback_stalled_wps
+
+    @property
+    def last_playback_time_fallback(self) -> bool:
+        """最近一次回放是否落到了时间轴兜底（无 0x311）。"""
+        with self._lock:
+            return self._last_playback_time_fallback
 
     @property
     def last_correction(self) -> float:
@@ -1154,8 +1251,14 @@ class TrackPlayer:
         stalled_wps = 0
         timed_out = False
 
+        def _store_stats() -> None:
+            self._last_playback_had_odo = odo0 is not None
+            self._last_playback_stalled_wps = stalled_wps
+            self._last_playback_time_fallback = bool(has_odo and odo0 is None)
+
         for idx, wp in enumerate(track.waypoints):
             if self._stop_event.is_set():
+                _store_stats()
                 return False
             if time.monotonic() > deadline_total:
                 timed_out = True
@@ -1188,6 +1291,7 @@ class TrackPlayer:
                     target_t = t0 + wp.t
                     sleep_s = target_t - time.monotonic()
                     if not self._hold_vel(v, w, max(0.0, sleep_s)):
+                        _store_stats()
                         return False
                     continue
 
@@ -1196,15 +1300,7 @@ class TrackPlayer:
             ref_first = track.waypoints[rebase_idx] if rebase_idx is not None else first
             base_odo = odo_rebase if odo_rebase is not None else odo0
             if not self._set_vel(v, w):
-                if reverse_play and self._aborted_by_guard:
-                    self._aborted_by_guard = False
-                    stalled_wps += 1
-                    logger.warning(
-                        "Reverse waypoint %.1f s blocked by obstacle — "
-                        "skipping and continuing home",
-                        wp.t,
-                    )
-                    continue
+                _store_stats()
                 return False
             covered = self._wait_odometry_target(
                 wp, ref_first, base_odo,
@@ -1218,15 +1314,7 @@ class TrackPlayer:
                 wp_idx=idx,
             )
             if self._aborted_by_guard:
-                if reverse_play:
-                    self._aborted_by_guard = False
-                    stalled_wps += 1
-                    logger.warning(
-                        "Reverse waypoint %.1f s blocked mid-wait — "
-                        "skipping and continuing home",
-                        wp.t,
-                    )
-                    continue
+                _store_stats()
                 return False
             if not covered:
                 # 该航点未能覆盖（里程停滞/预算耗尽）：**不中止整个回放**，
@@ -1261,7 +1349,7 @@ class TrackPlayer:
                 "Playback clamped %d waypoint(s) to safe limits (v≤%.2f m/s, w≤%.2f rad/s)",
                 clamped, MAX_PLAY_LINEAR_M_S, MAX_PLAY_ANGULAR_RAD_S,
             )
-        self._last_playback_had_odo = odo0 is not None
+        _store_stats()
         return not (stalled_wps > 0 or timed_out)
 
     def _waypoint_vw(

@@ -14,3 +14,6 @@ websockets>=12.0
 #   pip install scapy
 # matplotlib 用于 ascii_view 的点云 PNG 截图（view_lidar / mock_cloud 的 view 命令）
 matplotlib>=3.5
+# 可选：把 :9101 网页封装成桌面窗口（teleop_desktop.py / 笔记本客户端）
+#   pip install pywebview
+# Windows 用系统 Edge WebView2；Linux 需 GTK WebKit（python3-gi / gir1.2-webkit2-4.0）

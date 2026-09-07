@@ -1,0 +1,5 @@
+{
+  "notes": "人工勾选合格定位图。空列表 = 还没有验收过的新图。lab / lab2 几何不合格，已移到 archive/banned_maps/，禁止写入 maps 列表。新图请存 maps/runs/ 验收后再登记 id。",
+  "banned": ["lab", "lab2"],
+  "maps": []
+}

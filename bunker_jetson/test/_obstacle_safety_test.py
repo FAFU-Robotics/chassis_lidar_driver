@@ -13,6 +13,7 @@ from bunker_mini.obstacle import (
     ObstacleGuard,
     ObstaclePolicy,
     near_collision_hits,
+    office_obstacle_policy,
 )
 from bunker_mini.terrain import TerrainSectorResult
 
@@ -123,7 +124,7 @@ def test_chair_at_half_meter_hard_stops() -> None:
     lidar = _FakeLidar(5.0, body_points=pts)
     lidar._acc = AccumulatingSectors()
     lidar._acc.add(0.0, 5.0)
-    guard = ObstacleGuard(lidar, ObstaclePolicy(stop_confirm_frames=1))
+    guard = ObstacleGuard(lidar, office_obstacle_policy(stop_confirm_frames=1))
     v, w, blocked = guard.guard_velocity(0.10, 0.0)
     check("0.46 m 椅背急停", blocked and v == 0.0)
 
@@ -134,7 +135,7 @@ def test_body_box_hold_survives_one_empty_frame() -> None:
     lidar = _FakeLidar(5.0, body_points=pts)
     lidar._acc = AccumulatingSectors()
     lidar._acc.add(0.0, 5.0)
-    guard = ObstacleGuard(lidar, ObstaclePolicy(stop_confirm_frames=1))
+    guard = ObstacleGuard(lidar, office_obstacle_policy(stop_confirm_frames=1))
     guard.guard_velocity(0.10, 0.0)
     lidar.latest_frame.points = []
     v, w, blocked = guard.guard_velocity(0.10, 0.0)

@@ -45,6 +45,8 @@ ensure_project_root()
 
 from bunker_mini.agent import BunkerMiniAgent
 from bunker_mini.can_util import CanConfigError, add_can_cli_args, format_device_list, print_can_config_help
+from bunker_mini.navigator import load_wheelbase_m
+from bunker_mini.terrain import DEFAULT_STEP_LIMIT_M
 
 
 def _env_or(name: str, default: str = "") -> str:
@@ -143,6 +145,15 @@ def main() -> int:
         default=_env_or("BUNKER_LIDAR_PCAP"),
         help="离线回放：用 PCAP 抓包文件替代 UDP 雷达（B 迁移能力，无雷达也可跑通避障/导航；env: BUNKER_LIDAR_PCAP）",
     )
+    _src = _env_or("BUNKER_LIDAR_SOURCE", "auto").strip().lower()
+    if _src not in ("auto", "udp", "ros"):
+        _src = "auto"
+    parser.add_argument(
+        "--lidar-source",
+        default=_src,
+        choices=["auto", "udp", "ros"],
+        help="雷达数据源：auto=6699 被占则订 /rslidar_points；udp=只绑 MSOP；ros=只订话题 (env: BUNKER_LIDAR_SOURCE)",
+    )
     parser.add_argument(
         "--lidar-mount-yaw",
         type=float,
@@ -171,15 +182,17 @@ def main() -> int:
     parser.add_argument(
         "--wheelbase",
         type=float,
-        default=float(_env_or("BUNKER_WHEELBASE", "0.5")),
-        help="左右轮间距（米），导航航迹推算用 (env: BUNKER_WHEELBASE, 默认 0.5)",
+        default=float(_env_or("BUNKER_WHEELBASE") or load_wheelbase_m()),
+        help="左右轮间距（米），导航航迹推算用 "
+             "(env: BUNKER_WHEELBASE，否则 bunker_jetson/wheelbase.local，默认 0.5)",
     )
     parser.add_argument(
         "--step-limit",
         type=float,
-        default=float(_env_or("BUNKER_STEP_LIMIT", "0.07")),
+        default=float(_env_or("BUNKER_STEP_LIMIT", str(DEFAULT_STEP_LIMIT_M))),
         help="允许的最大台阶/坑深度（米），超过则判定不可通行需绕行；"
-             "约底盘离地间隙的一半 (env: BUNKER_STEP_LIMIT, 默认 0.07)",
+             "实车离地约 80 mm，碾过 ≤3–4 cm（env: BUNKER_STEP_LIMIT，默认 0.04）。"
+             "实验室椅子场景另设 BUNKER_OA_SCENE=office",
     )
     parser.add_argument(
         "--recon-max-duration",
@@ -249,6 +262,20 @@ def main() -> int:
         help="本地 TCP 模式：不连云端 WebSocket，指令走 teleop TCP :9100 "
              "(env: BUNKER_LOCAL_TCP=1；配合仓库根目录 run_local.py)",
     )
+    parser.add_argument(
+        "--autonav-yaw-match",
+        dest="autonav_yaw_match",
+        action="store_true",
+        default=_env_or("BUNKER_AUTONAV_YAW_MATCH", "1") not in ("0", "false", "False", "no", "off"),
+        help="出发系/现场图前往时用雷达扫描匹配只修航向（默认开；"
+             "BUNKER_AUTONAV_YAW_MATCH=0 或 --no-autonav-yaw-match 关）",
+    )
+    parser.add_argument(
+        "--no-autonav-yaw-match",
+        dest="autonav_yaw_match",
+        action="store_false",
+        help="出发系前往关闭航向扫描匹配，纯轮式原点",
+    )
     args = parser.parse_args()
 
     if args.list_devices:
@@ -292,6 +319,7 @@ def main() -> int:
             enable_lidar=args.enable_lidar,
             lidar_port=args.lidar_port,
             lidar_pcap=args.lidar_pcap,
+            lidar_source=args.lidar_source,
             lidar_mount_yaw_deg=args.lidar_mount_yaw,
             lidar_pitch_deg=args.lidar_pitch,
             lidar_height_m=args.lidar_height,
@@ -308,6 +336,7 @@ def main() -> int:
             auto_mission_wait_lidar_s=args.wait_lidar,
             mission_lock=args.mission_lock,
             local_mode=args.local,
+            autonav_yaw_match=args.autonav_yaw_match,
         )
     except CanConfigError as exc:
         print(f"\nCAN 配置错误:\n{exc}", file=sys.stderr)

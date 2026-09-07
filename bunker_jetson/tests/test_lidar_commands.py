@@ -1,11 +1,12 @@
 """云端雷达命令（lidar_on/off/status/map）、goto 预检与导航 drive 回调测试。"""
 
+import math
 import time
 
 import pytest
 
 import bunker_mini.agent as agent_mod
-from bunker_mini.agent import BunkerMiniAgent, Command
+from bunker_mini.agent import AgentState, BunkerMiniAgent, Command
 from bunker_mini.navigator import Navigator, Pose2D
 from bunker_mini.obstacle import ObstacleGuard, ObstaclePolicy
 from bunker_mini.occupancy import OccupancyGrid
@@ -97,17 +98,27 @@ class _Nav:
         self.pose = Pose2D(0.0, 0.0, 0.0)
         self.is_navigating = False
         self.goals: list = []
+        self.goal_yaws: list = []
         self.stopped = 0
+        self.last_result = None
 
     def stop(self):
         self.stopped += 1
+        self.is_navigating = False
 
     def set_guard(self, guard):
         self.guard = guard
 
+    def set_wheelbase(self, wheelbase_m):
+        self.wheelbase_m = wheelbase_m
+
     def goto(self, x, y, *, on_arrived=None, on_abort=None, speed=None,
              waypoints=None, replanner=None, goal_yaw=None):
+        if self.is_navigating:
+            self.stop()
         self.goals.append((x, y, speed))
+        self.goal_yaws.append(goal_yaw)
+        self.is_navigating = True
         return True
 
 
@@ -351,7 +362,7 @@ def test_goto_proceeds_when_grid_stale_but_live_clear(agent):
     # 但实时雷达（_FakeLidar.nearest_in_range → 1.5 m）看不到近于目标的障碍
     agent._occ_grid.update(0.0, 0.0, 0.0, sectors=[(0.0, 1.0)])
     agent._handle_goto(Command(action="goto", x=1.0, y=0.0))
-    assert agent._navigator.goals == [(1.0, 0.0, None)]
+    assert agent._navigator.goals == [(1.0, 0.0, 0.15)]
     assert not events or events[-1][0] != "fault"
 
 
@@ -360,7 +371,7 @@ def test_goto_free_target_proceeds(agent):
     agent._send_event = lambda e, m: events.append((e, m))
     agent._occ_grid.update(0.0, 0.0, 0.0, sectors=[(3.0, 2.0)])
     agent._handle_goto(Command(action="goto", x=1.0, y=0.0))
-    assert agent._navigator.goals == [(1.0, 0.0, None)]
+    assert agent._navigator.goals == [(1.0, 0.0, 0.15)]
     assert not events or events[-1][0] != "fault"
 
 
@@ -421,7 +432,7 @@ def test_goto_forwards_optional_speed_to_navigator(agent):
 def test_goto_zero_speed_uses_default(agent):
     agent._occ_grid.update(0.0, 0.0, 0.0, sectors=[(3.0, 2.0)])
     agent._handle_goto(Command(action="goto", x=1.0, y=0.0, speed=0.0))
-    assert agent._navigator.goals == [(1.0, 0.0, None)]
+    assert agent._navigator.goals == [(1.0, 0.0, 0.15)]
 
 
 def test_goto_rejects_when_lidar_open_but_no_data(agent):
@@ -442,7 +453,7 @@ def test_goto_allowed_when_lidar_disabled(agent):
     agent._send_event = lambda e, m: events.append((e, m))
     agent._lidar = None
     agent._handle_goto(Command(action="goto", x=1.0, y=0.0))
-    assert agent._navigator.goals == [(1.0, 0.0, None)]
+    assert agent._navigator.goals == [(1.0, 0.0, 0.15)]
 
 
 def test_navigator_goto_speed_caps_velocity():
@@ -577,4 +588,53 @@ def test_push_point_cloud_stream_skips_offline(agent):
     })()
     agent._push_point_cloud_stream()
     assert out == []
+
+
+def test_goto_forwards_yaw_deg(agent):
+    agent._handle_goto(Command(
+        action="goto", x=1.0, y=0.0, speed=0.12, yaw_deg=90.0, goal_yaw_set=True,
+    ))
+    assert agent._navigator.goals[-1] == (1.0, 0.0, 0.12)
+    assert agent._navigator.goal_yaws[-1] == pytest.approx(math.radians(90.0))
+
+
+def test_goto_replaces_instead_of_fault(agent):
+    events = []
+    agent._send_event = lambda e, m: events.append((e, m))
+    agent._handle_goto(Command(action="goto", x=1.0, y=0.0))
+    agent._navigator.is_navigating = True
+    agent._handle_goto(Command(action="goto", x=2.0, y=0.5, speed=0.12))
+    assert agent._navigator.goals[-1] == (2.0, 0.5, 0.12)
+    assert agent._navigator.stopped >= 1
+    assert not any(e == "fault" for e, _ in events)
+    assert any(e == "goto" and "改目标" in m for e, m in events)
+
+
+def test_set_wheelbase_updates_nav_and_state(agent, tmp_path, monkeypatch):
+    saved = []
+    monkeypatch.setattr(
+        "bunker_mini.agent.save_wheelbase_m",
+        lambda wb, path=None: saved.append(wb) or tmp_path / "wb",
+    )
+    agent._state = AgentState.ONLINE
+    events = []
+    agent._send_event = lambda e, m: events.append((e, m))
+    agent._handle_set_wheelbase(Command(action="set_wheelbase", wheelbase_m=0.46))
+    assert agent._wheelbase_m == pytest.approx(0.46)
+    assert getattr(agent._navigator, "wheelbase_m", None) == pytest.approx(0.46)
+    assert saved == [0.46]
+    assert any(e == "wheelbase" for e, _ in events)
+
+
+def test_record_goto_result_exposes_residual(agent):
+    agent._navigator.last_result = {
+        "arrived": True, "goalX": 1.0, "goalY": 0.0,
+        "errM": 0.041, "errYawDeg": 3.2,
+    }
+    events = []
+    agent._send_event = lambda e, m: events.append((e, m))
+    agent._record_goto_result(1.0, 0.0, arrived=True)
+    assert agent._last_goto["errM"] == pytest.approx(0.041)
+    assert "残差 0.041 m" in events[-1][1]
+    assert "3.2°" in events[-1][1]
 

@@ -27,14 +27,16 @@ import sys
 import threading
 import time
 from pathlib import Path
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, unquote
 
 ROOT = Path(__file__).resolve().parent
 JETSON = ROOT / "bunker_jetson"
 if str(JETSON) not in sys.path:
     sys.path.insert(0, str(JETSON))
 
-from bunker_mini.teleop_tcp import DEFAULT_PORT, DEFAULT_TOKEN, TeleopTcpClient  # noqa: E402
+from bunker_mini.teleop_tcp import DEFAULT_PORT, DEFAULT_TOKEN, TeleopTcpClient, json_bytes  # noqa: E402
+from bunker_mini.tracker import Track, track_web_summary  # noqa: E402
+from bunker_mini.qualified_maps import qualified_ids  # noqa: E402
 
 DEFAULT_WEB_PORT = 9101
 DEFAULT_WEB_PASSWORD = "fafu123456"
@@ -43,20 +45,49 @@ _SESSION_TTL_S = 12 * 3600
 _LOGIN_WINDOW_S = 60.0
 _LOGIN_MAX_FAILS = 5
 _WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
-_MAX_WS = 8192
+_MAX_WS = 65535
+_WS_VISUAL_MAX = 24_000
 _PAGE_PATH = ROOT / "teleop_web.html"
 TRACKS = JETSON / "tracks"
+
+
+def arrived_starts_reverse(payload: dict) -> bool:
+    """往返 fb：只有去程完整走完才自动倒放，残缺/倒放本身不得再触发一趟。"""
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if isinstance(data, dict):
+        direction = str(data.get("direction") or "")
+        if direction == "reverse" or data.get("phase") in ("dock", "reverse"):
+            return False
+        if data.get("complete") is False:
+            return False
+        if direction == "forward":
+            return bool(data.get("complete", True)) and not data.get("timeFallback")
+    text = str((payload or {}).get("msg") or "")
+    if "Reverse" in text or "back at start" in text or "原路返回" in text or "docked" in text:
+        return False
+    if "interrupted" in text or "approximate" in text or "未完整" in text:
+        return False
+    return "Track replay completed" in text or "回放完成" in text
 _ALLOWED_ACTIONS = frozenset({
-    "move", "estop", "goto", "find_object", "go_home", "cancel", "odom_reset",
+    "move", "estop",     "goto", "find_object", "go_home", "cancel", "odom_reset",
     "grasp_done", "map_return", "pose_align", "map_upload",
+    "set_wheelbase", "calibrate_wheelbase",
     "lidar_on", "lidar_off", "lidar_status", "lidar_map", "point_cloud",
     "query", "track_record", "track_follow", "track_follow_back", "track_delete",
     "task_submit",
+    "autonav_goto", "autonav_select_map", "autonav_map", "autonav_cancel",
 })
 
 
 def _page_bytes() -> bytes:
     return _PAGE_PATH.read_bytes()
+
+
+def _qualified_stems() -> set[str]:
+    try:
+        return {x.lower() for x in qualified_ids()}
+    except Exception:
+        return set()
 
 
 def _lan_ips() -> list[str]:
@@ -67,12 +98,51 @@ def _lan_ips() -> list[str]:
                 ips.append(tok)
     except Exception:
         pass
-    return ips
+
+    def _skip_for_laptop(ip: str) -> bool:
+        return ip.startswith("192.168.1.") or ip.startswith("172.17.")
+
+    client = [ip for ip in ips if not _skip_for_laptop(ip)]
+    other = [ip for ip in ips if _skip_for_laptop(ip)]
+    return client + other
 
 
 def _ws_accept(key: str) -> str:
     raw = hashlib.sha1((key + _WS_GUID).encode("ascii")).digest()
     return base64.b64encode(raw).decode("ascii")
+
+
+def _cap_xy(items: object, cap: int) -> list:
+    if not isinstance(items, list) or cap <= 0:
+        return []
+    if len(items) <= cap:
+        return items
+    step = max(1, int((len(items) + cap - 1) / cap))
+    return items[::step][:cap]
+
+
+def _shrink_ws_visual(ev: str, data: dict) -> dict:
+    out = dict(data)
+    out.pop("text", None)
+    if ev == "point_cloud":
+        pts = _cap_xy(out.get("points"), 250)
+        out["points"] = pts
+        out["shown"] = len(pts)
+    elif ev == "lidar_map":
+        for key in ("occupied", "blocked", "free"):
+            arr = out.get(key)
+            if isinstance(arr, list):
+                out[key] = _cap_xy(arr, 250)
+    elif ev == "autonav_map":
+        for key in (
+            "occupied", "blocked", "free",
+            "sketchOccupied", "odomOccupied", "odomBlocked", "odomFree",
+            "cloudXY",
+        ):
+            arr = out.get(key)
+            if isinstance(arr, list):
+                out[key] = _cap_xy(arr, 400)
+    return out
 
 
 class _WsIdle(Exception):
@@ -243,9 +313,8 @@ class TeleopWebServer:
         return [f"http://{ip}:{self.http_port}" for ip in ips]
 
     def _ws_out(self, sock: socket.socket, payload: dict) -> None:
-        try:
-            raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        except (TypeError, ValueError):
+        raw = json_bytes(payload)
+        if raw is None:
             return
         try:
             with self._out_lock:
@@ -275,7 +344,10 @@ class TeleopWebServer:
                 with self._evt_lock:
                     events = tcp.poll_events()
                 for msg in events:
-                    self._on_tcp_msg(msg)
+                    try:
+                        self._on_tcp_msg(msg)
+                    except Exception:
+                        continue
             except OSError:
                 with self._tcp_lock:
                     self._tcp = None
@@ -319,7 +391,10 @@ class TeleopWebServer:
                 with self._evt_lock:
                     events = tcp.poll_events()
                 for msg in events:
-                    self._on_tcp_msg(msg)
+                    try:
+                        self._on_tcp_msg(msg)
+                    except Exception:
+                        continue
                     if msg.get("type") == "state" and isinstance(msg.get("payload"), dict):
                         return msg["payload"]
                 time.sleep(0.05)
@@ -338,7 +413,36 @@ class TeleopWebServer:
             return
         ev = str(payload.get("event") or "")
         text = str(payload.get("msg") or "")
-        if ev == "point_cloud":
+        if ev in ("point_cloud", "lidar_map", "lidar_status", "autonav_map"):
+            data = payload.get("data") if isinstance(payload.get("data"), dict) else None
+            if data is None and text.startswith("{"):
+                try:
+                    parsed = json.loads(text)
+                except json.JSONDecodeError:
+                    parsed = None
+                if isinstance(parsed, dict):
+                    data = parsed
+            if data is not None:
+                data = _shrink_ws_visual(ev, data)
+                blob = {"t": ev, "payload": data}
+                raw = json_bytes(blob)
+                if raw is not None and len(raw) > _WS_VISUAL_MAX and ev in ("lidar_map", "autonav_map"):
+                    data = dict(data)
+                    data.pop("free", None)
+                    blob = {"t": ev, "payload": data}
+                    raw = json_bytes(blob)
+                if raw is not None and len(raw) <= _WS_VISUAL_MAX:
+                    self._broadcast(blob)
+            if ev == "lidar_status":
+                src = data.get("source") if data else ""
+                online = data.get("online") if data else False
+                diag = (data or {}).get("diagnosis") or ""
+                short = (
+                    ("在线" if online else "离线")
+                    + (f" · {src}" if src else "")
+                    + (f" · {diag}" if diag else "")
+                )
+                self._broadcast({"t": "event", "payload": {"event": "lidar_status", "msg": short}})
             return
         if ev == "chassis":
             data = payload.get("data")
@@ -358,8 +462,7 @@ class TeleopWebServer:
             return
         self._broadcast({"t": "event", "payload": payload})
         if ev == "arrived" and self._roundtrip_track:
-            reverse = "Reverse" in text or "back at start" in text
-            if not reverse:
+            if arrived_starts_reverse(payload):
                 name = self._roundtrip_track
                 self._roundtrip_track = ""
                 self._dispatch_cmd({
@@ -372,24 +475,89 @@ class TeleopWebServer:
                     "t": "event",
                     "payload": {"event": "track_follow", "msg": "往返：已到终点，正在原路返回"},
                 })
+            elif "Reverse" in str(payload.get("msg") or "") or (
+                isinstance(payload.get("data"), dict)
+                and payload["data"].get("direction") == "reverse"
+            ):
+                self._roundtrip_track = ""
 
     def _list_tracks(self) -> list[dict]:
         items: list[dict] = []
-        try:
-            names = sorted(f for f in os.listdir(TRACKS) if f.endswith(".json"))
-        except FileNotFoundError:
-            return items
-        for n in names:
-            path = TRACKS / n
-            rec = {"name": n[:-5], "duration": 0.0, "waypoints": 0}
+        seen: set[str] = set()
+        dirs = []
+        for folder in (JETSON / "tracks", ROOT / "tracks"):
             try:
-                with path.open("r", encoding="utf-8") as fp:
-                    data = json.load(fp)
-                rec["duration"] = float(data.get("total_duration_s", 0.0))
-                rec["waypoints"] = len(data.get("waypoints") or [])
-            except Exception:
-                pass
-            items.append(rec)
+                key = str(folder.resolve())
+            except OSError:
+                key = str(folder)
+            if key in seen:
+                continue
+            seen.add(key)
+            dirs.append(folder)
+        by_name: dict[str, dict] = {}
+        for folder in dirs:
+            try:
+                names = sorted(f for f in os.listdir(folder) if f.endswith(".json"))
+            except FileNotFoundError:
+                continue
+            for n in names:
+                path = folder / n
+                rec = {
+                    "name": n[:-5],
+                    "duration": 0.0,
+                    "waypoints": 0,
+                    "odometerSource": "unknown",
+                    "driveMode": "unknown",
+                    "hasOdo": False,
+                    "returnOk": False,
+                    "dockOk": False,
+                    "reasons": ["unreadable"],
+                    "startPose": None,
+                    "distanceM": None,
+                }
+                try:
+                    with path.open("r", encoding="utf-8") as fp:
+                        data = json.load(fp)
+                    rec = track_web_summary(Track.from_json(data))
+                    rec["name"] = n[:-5]
+                except Exception:
+                    pass
+                by_name[n[:-5]] = rec
+        items = [by_name[k] for k in sorted(by_name)]
+        return items
+
+    def _list_slam_maps(self) -> list[dict]:
+        folder = ROOT / "maps"
+        items: list[dict] = []
+        try:
+            names = sorted(folder.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True)
+        except OSError:
+            return items
+        keep = {".simplemap", ".mm", ".json", ".png"}
+        for path in names:
+            if not path.is_file() or path.suffix.lower() not in keep:
+                continue
+            if path.name in ("qualified.json", "selected_map.local"):
+                continue
+            try:
+                st = path.stat()
+            except OSError:
+                continue
+            stem = path.stem.lower()
+            usable = "archive"
+            if path.suffix.lower() == ".json":
+                usable = "occupancy"
+            elif stem in ("lab", "lab2"):
+                usable = "not_for_loc"
+            elif stem in _qualified_stems():
+                usable = "qualified"
+            items.append({
+                "name": path.name,
+                "kind": path.suffix.lower().lstrip("."),
+                "bytes": int(st.st_size),
+                "mtime": int(st.st_mtime),
+                "usable": usable,
+            })
         return items
 
     def _probe_display(self) -> str | None:
@@ -444,6 +612,17 @@ class TeleopWebServer:
     def _open_lidar_view(self, mode: str) -> str:
         if mode == "off":
             return "雷达窗口已关闭" if self._close_viewers() else "没有正在跑的雷达窗口"
+        try:
+            from bunker_mini.lidar import MSOP_PORT, msop_udp_bound
+        except Exception:
+            msop_udp_bound = None  # type: ignore[assignment]
+            MSOP_PORT = 6699
+        if msop_udp_bound is not None and msop_udp_bound(MSOP_PORT):
+            return (
+                "MSOP 6699 已被占用（多半是 rslidar_sdk 建图）。"
+                "未开工控机桌面窗。"
+                "雷达画面在浏览器「雷达 / 地图」页：点「雷达开」订 /rslidar_points。"
+            )
         opened = []
         if mode in ("cloud", "live", "map", "both"):
             if self._launch_script(JETSON / "view_lidar.py"):
@@ -476,6 +655,12 @@ class TeleopWebServer:
                 speed = float(msg.get("speed") or 0.0)
                 if 0 < speed <= 0.5:
                     out["speed"] = speed
+                if msg.get("yawDeg") is not None and str(msg.get("yawDeg")).strip() != "":
+                    out["yawDeg"] = float(msg["yawDeg"])
+            elif action == "set_wheelbase":
+                out["wheelbaseM"] = float(msg["wheelbaseM"])
+            elif action == "calibrate_wheelbase":
+                out["yawDeg"] = float(msg["yawDeg"])
             elif action == "find_object":
                 out["name"] = str(msg.get("name") or "target")
                 out["approach"] = bool(msg.get("approach", True))
@@ -521,9 +706,35 @@ class TeleopWebServer:
                     return None
                 out["file"] = path
             elif action == "lidar_map":
+                out["includeFree"] = bool(msg.get("includeFree", True))
                 if msg.get("x") is not None and msg.get("y") is not None:
                     out["x"] = float(msg["x"])
                     out["y"] = float(msg["y"])
+            elif action == "autonav_goto":
+                out["x"] = float(msg["x"])
+                out["y"] = float(msg["y"])
+                speed = float(msg.get("speed") or 0.0)
+                if 0 < speed <= 0.5:
+                    out["speed"] = speed
+                if msg.get("yawDeg") is not None and str(msg.get("yawDeg")).strip() != "":
+                    out["yawDeg"] = float(msg["yawDeg"])
+                name = str(msg.get("name") or msg.get("mapId") or "").strip()
+                if name:
+                    out["name"] = name
+                frame = str(msg.get("frame") or "odom").strip().lower()
+                if frame in ("map", "slam", "world"):
+                    out["frame"] = "map"
+                elif frame in ("sketch", "occ", "pseudo", "live"):
+                    out["frame"] = "sketch"
+                else:
+                    out["frame"] = "odom"
+            elif action == "autonav_select_map":
+                name = str(msg.get("name") or msg.get("mapId") or "").strip()
+                if not name:
+                    return None
+                out["name"] = name
+            elif action in ("autonav_map", "autonav_cancel"):
+                pass
         except (KeyError, TypeError, ValueError):
             return None
         return out
@@ -551,7 +762,10 @@ class TeleopWebServer:
                         events = tcp.poll_events()
                     got = False
                     for msg in events:
-                        self._on_tcp_msg(msg)
+                        try:
+                            self._on_tcp_msg(msg)
+                        except Exception:
+                            continue
                         if msg.get("type") == "state" or (
                             isinstance(msg.get("payload"), dict)
                             and msg.get("payload", {}).get("event") == "chassis"
@@ -560,7 +774,9 @@ class TeleopWebServer:
                     if got:
                         break
                     time.sleep(0.05)
-            self._broadcast({"t": "cmd_ok", "action": str(payload.get("action") or "")})
+            vis = str(payload.get("action") or "")
+            if vis not in ("lidar_map", "point_cloud", "lidar_status", "autonav_map"):
+                self._broadcast({"t": "cmd_ok", "action": vis})
         except Exception as exc:
             with self._tcp_lock:
                 self._tcp = None
@@ -766,6 +982,37 @@ class TeleopWebServer:
                         extra='Content-Disposition: attachment; filename="teleop_from_laptop.py"\r\n',
                     )
                     return
+            if path.startswith("/maps/"):
+                name = unquote(path[len("/maps/"):])
+                if (
+                    not name
+                    or name.startswith(".")
+                    or "/" in name
+                    or "\\" in name
+                    or ".." in name
+                ):
+                    conn.sendall(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n")
+                    return
+                ext = Path(name).suffix.lower()
+                if ext not in (".png", ".json"):
+                    _http_send(conn, 403, b"only png or json\n")
+                    return
+                folder = (ROOT / "maps").resolve()
+                src = (folder / name).resolve()
+                try:
+                    src.relative_to(folder)
+                except ValueError:
+                    conn.sendall(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n")
+                    return
+                if not src.is_file():
+                    conn.sendall(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n")
+                    return
+                if src.stat().st_size > 8 * 1024 * 1024:
+                    _http_send(conn, 413, b"too large\n")
+                    return
+                ctype = "image/png" if ext == ".png" else "application/json; charset=utf-8"
+                _http_send(conn, 200, src.read_bytes(), ctype=ctype)
+                return
             conn.sendall(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n")
         except OSError:
             pass
@@ -807,6 +1054,9 @@ class TeleopWebServer:
         with self._ws_lock:
             self._ws_clients.append(conn)
         conn.settimeout(0.2)
+        snap = self._last_state or self._state_from_file()
+        if isinstance(snap, dict) and snap:
+            self._ws_out(conn, {"t": "state", "payload": snap})
         try:
             while not self._stop.is_set():
                 try:
@@ -863,6 +1113,9 @@ class TeleopWebServer:
             return
         if kind == "tracks":
             self._ws_out(conn, {"t": "tracks", "items": self._list_tracks()})
+            return
+        if kind == "slam_maps":
+            self._ws_out(conn, {"t": "slam_maps", "items": self._list_slam_maps()})
             return
         if kind == "chassis":
             threading.Thread(
@@ -926,7 +1179,9 @@ def _http_send(
         200: "OK",
         303: "See Other",
         401: "Unauthorized",
+        403: "Forbidden",
         404: "Not Found",
+        413: "Payload Too Large",
         429: "Too Many Requests",
     }.get(status, "OK")
     conn.sendall(

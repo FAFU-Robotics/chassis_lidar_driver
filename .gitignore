@@ -28,6 +28,9 @@ modules.order
 # 运行时地图截图（现场生成，不是源码）
 bunker_jetson/maps/*.png
 
+# GitHub 单文件上限 100MB；simplemap 现场地图包只留工控机本地
+*.simplemap
+
 # 组员目录里的临时对照文件
 robosense_airy/*.before_tab_fix
 

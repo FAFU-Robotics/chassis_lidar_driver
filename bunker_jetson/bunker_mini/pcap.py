@@ -167,6 +167,7 @@ class PcapReplaySource:
     """
 
     NO_DATA_STALE_S: float = 3.0
+    source: str = "pcap"
 
     def __init__(
         self,

@@ -47,7 +47,7 @@ ACTIVE_MISSION_STATUSES: frozenset[str] = frozenset({
 
 # 安全指令：过期也执行（宁可不该停也停，也不该停没停）。
 NEVER_STALE_ACTIONS: frozenset[str] = frozenset({
-    "estop", "cancel", "query",
+    "estop", "cancel", "query", "autonav_map",
 })
 
 # 遥控速度：TTL 必须短于人的反应，否则延迟通道会把「已松开」变成继续开。
@@ -58,6 +58,7 @@ START_ACTIONS: frozenset[str] = frozenset({
     "find_object", "goto", "go_home", "track_follow", "track_record",
     "task_submit", "odom_reset", "lidar_on", "lidar_off",
     "map_upload", "pose_align", "map_return",
+    "autonav_goto", "autonav_select_map", "autonav_cancel",
 })
 
 

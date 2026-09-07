@@ -1,0 +1,19 @@
+{
+  "session": "teleop_map3",
+  "start_wall": "2026-09-04 16:17:40",
+  "live_rows": 500,
+  "path_m": 3.56,
+  "disp_m": 2.951,
+  "start_xy": [
+    -0.0,
+    0.0
+  ],
+  "end_xy": [
+    2.948,
+    0.125
+  ],
+  "end_yaw_deg": -60.8,
+  "localmap_end": 3300,
+  "froze_after_s": 205.0,
+  "note": "pose froze at yaw ~-61 deg; mapping 0.25m/20deg"
+}

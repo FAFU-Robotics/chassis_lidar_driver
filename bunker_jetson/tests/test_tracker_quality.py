@@ -371,17 +371,21 @@ class TestRecordingQuality:
             schema_version=1, wheelbase_m=0.42, total_distance_m=0.5,
             max_speed_m_s=0.3, max_angular_rad_s=0.6, sample_mode="adaptive",
             odometer_source="real", drive_mode="kb",
+            start_x=1.25, start_y=-0.4, start_yaw_deg=90.0,
         )
         rev = track.reversed()
         assert rev.wheelbase_m == 0.42 and rev.total_distance_m == 0.5
         assert rev.max_speed_m_s == 0.3 and rev.sample_mode == "adaptive"
         assert rev.odometer_source == "real" and rev.drive_mode == "kb"
+        assert rev.start_x == 1.25 and rev.start_y == -0.4
+        assert rev.start_yaw_deg == 90.0
 
         parsed = Track.from_json(track.to_json())
         assert parsed.wheelbase_m == 0.42
         assert parsed.total_distance_m == 0.5
         assert parsed.schema_version == 1
         assert parsed.sample_mode == "adaptive"
+        assert parsed.start_x == 1.25 and parsed.start_yaw_deg == 90.0
 
         # 兼容无元数据的旧轨迹文件
         legacy = Track.from_json(
@@ -392,6 +396,7 @@ class TestRecordingQuality:
         assert legacy.sample_mode == "fixed"
         assert legacy.drive_mode == "unknown"
         assert legacy.odometer_source == "unknown"
+        assert legacy.start_x is None and legacy.start_yaw_deg is None
 
 
 # --------------------------------------------------------------------------

@@ -1,0 +1,20 @@
+P2 Pose — auxiliary plot from real /lidar_odometry/pose
+NOT an RViz screenshot (no historical path display in current RViz)
+data_source: /lidar_odometry/pose
+csv: ppt_materials/generated/final_20260904/teleop_map4/samples.csv
+experiment: human teleop 2026-09-04 16:32:08 (operator drove U-track)
+CAN: No (operator drove; this plot does not send CAN)
+chassis: real human teleop motion
+start_xy: (-0.001, 0.004)
+end_xy: (3.605, -2.486)
+path_length_m: 8.746
+yaw_deg: -0.0 -> -126.4
+yaw_range_deg: -134.1 .. 0.2
+localmap_n: 1244 -> 7847
+quality_min: 0.504
+quality_max: 1.000
+quality_avg: 0.886
+icp_failure: 0
+trajectory_edited: No
+forced_U_shape: No (plotted as published pose; two corners tracked, return leg incomplete in lidar odom)
+fictional_obstacles: No

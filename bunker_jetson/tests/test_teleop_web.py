@@ -178,8 +178,13 @@ def test_http_page_and_ws_stick():
         assert "底盘状态".encode("utf-8") in page
         assert "开环 move".encode("utf-8") in page
         assert "导航 goto".encode("utf-8") in page
+        assert "终点航向".encode("utf-8") in page
+        assert "轮距标定".encode("utf-8") in page
         assert "功能总览".encode("utf-8") in page
         assert "#/nav".encode("ascii") in page
+        assert "#/autonav".encode("ascii") in page
+        assert "自动导航".encode("utf-8") in page
+        assert "短距里程".encode("utf-8") in page
 
         ws = _ws_client("127.0.0.1", 19112, sid)
         _ws_send_text(ws, json.dumps({"t": "s", "v": 0.10, "w": 0.20}))
@@ -279,9 +284,72 @@ def test_ws_cmd_move_open_loop():
         tcp.stop()
 
 
+def test_arrived_starts_reverse_only_on_complete_forward():
+    from teleop_web import arrived_starts_reverse
+    assert arrived_starts_reverse({"msg": "Track replay completed"}) is True
+    assert arrived_starts_reverse({"msg": "Track replay interrupted — did not fully cover the route"}) is False
+    assert arrived_starts_reverse({"msg": "Reverse replay completed — docked at recorded start"}) is False
+    assert arrived_starts_reverse({
+        "msg": "ok",
+        "data": {"direction": "forward", "complete": True},
+    }) is True
+    assert arrived_starts_reverse({
+        "msg": "ok",
+        "data": {"direction": "forward", "complete": False, "stalledWps": 3},
+    }) is False
+    assert arrived_starts_reverse({
+        "msg": "ok",
+        "data": {"direction": "reverse", "complete": True},
+    }) is False
+
+
+def test_sanitize_goto_yaw_and_wheelbase():
+    from teleop_web import TeleopWebServer
+    web = TeleopWebServer(
+        tcp_host="127.0.0.1", tcp_port=19999, token="t",
+        http_host="127.0.0.1", http_port=19998,
+    )
+    g = web._sanitize_cmd({
+        "action": "goto", "x": 1.2, "y": -0.4, "speed": 0.15, "yawDeg": 90,
+    })
+    assert g is not None
+    assert g["x"] == 1.2 and g["y"] == -0.4
+    assert g["speed"] == 0.15
+    assert g["yawDeg"] == 90.0
+    wb = web._sanitize_cmd({"action": "set_wheelbase", "wheelbaseM": 0.48})
+    assert wb is not None and wb["wheelbaseM"] == 0.48
+    cal = web._sanitize_cmd({"action": "calibrate_wheelbase", "yawDeg": 90})
+    assert cal is not None and cal["yawDeg"] == 90.0
+
+
+def test_sanitize_autonav_sketch_frame():
+    from teleop_web import TeleopWebServer
+    web = TeleopWebServer(
+        tcp_host="127.0.0.1", tcp_port=19997, token="t",
+        http_host="127.0.0.1", http_port=19996,
+    )
+    odom = web._sanitize_cmd({"action": "autonav_goto", "x": 1.0, "y": 0.0})
+    assert odom is not None and odom["frame"] == "odom"
+    sketch = web._sanitize_cmd({
+        "action": "autonav_goto", "x": 1.0, "y": 0.0, "frame": "sketch",
+    })
+    assert sketch is not None and sketch["frame"] == "sketch"
+    alias = web._sanitize_cmd({
+        "action": "autonav_goto", "x": 1.0, "y": 0.0, "frame": "occ",
+    })
+    assert alias is not None and alias["frame"] == "sketch"
+    mapped = web._sanitize_cmd({
+        "action": "autonav_goto", "x": 1.0, "y": 0.0, "frame": "map",
+    })
+    assert mapped is not None and mapped["frame"] == "map"
+
+
 if __name__ == "__main__":
     test_unauth_is_blocked()
     test_http_page_and_ws_stick()
     test_ws_cmd_find_object()
     test_ws_cmd_move_open_loop()
+    test_arrived_starts_reverse_only_on_complete_forward()
+    test_sanitize_goto_yaw_and_wheelbase()
+    test_sanitize_autonav_sketch_frame()
     print("PASS test_teleop_web")

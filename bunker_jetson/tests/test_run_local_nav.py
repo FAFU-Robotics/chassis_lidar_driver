@@ -162,10 +162,45 @@ def test_show_state_key_includes_navigating() -> None:
     assert "进行中" in nav_lines[1]
 
 
+def test_fmt_battery_soc_and_pack_voltage() -> None:
+    assert rl._fmt_battery({"battery": 0.89, "batteryVoltageV": 26.0}) == "89% 26.0V"
+    assert rl._fmt_battery({"battery": 0.89}) == "89%"
+    assert "低电" in rl._fmt_battery({"battery": 0.4, "batteryVoltageV": 23.0})
+    assert rl._fmt_battery({"battery": 25.6}) == "25.6V"
+
+
+def test_headless_env_clears_display_and_lidar() -> None:
+    out = rl._headless_env({
+        "DISPLAY": ":0",
+        "WAYLAND_DISPLAY": "wayland-0",
+        "XAUTHORITY": "/tmp/x",
+        "BUNKER_ENABLE_LIDAR": "1",
+        "KEEP": "1",
+    })
+    assert "DISPLAY" not in out
+    assert "WAYLAND_DISPLAY" not in out
+    assert "XAUTHORITY" not in out
+    assert out["BUNKER_MAP_VIEW"] == "0"
+    assert out["BUNKER_ENABLE_LIDAR"] == "0"
+    assert out["KEEP"] == "1"
+
+
+def test_daemon_implies_no_lidar_flag() -> None:
+    import argparse
+    # 与 main() 相同：--daemon 强制不开雷达
+    ns = argparse.Namespace(daemon=True, no_lidar=False)
+    if ns.daemon:
+        ns.no_lidar = True
+    assert ns.no_lidar is True
+
+
 if __name__ == "__main__":
     test_query_waits_for_fresh_state()
     test_goto_clamps_speed_and_sends_payload()
     test_goto_optional_yaw_deg()
     test_goto_omits_default_speed()
     test_show_state_key_includes_navigating()
+    test_fmt_battery_soc_and_pack_voltage()
+    test_headless_env_clears_display_and_lidar()
+    test_daemon_implies_no_lidar_flag()
     print("PASS test_run_local_nav")

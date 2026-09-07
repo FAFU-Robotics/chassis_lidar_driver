@@ -206,14 +206,14 @@ class TestPcapReplay:
 class TestSelfHardwareMask:
 
     def test_removes_bracket_points(self):
-        inside = _mk_point(x=0.15, y=0.30, z=0.28)      # 支架区
+        inside = _mk_point(x=0.10, y=0.10, z=0.20)      # 前唇自扫区
         outside = _mk_point(x=0.15, y=1.0, z=0.28)      # 远处，保留
         pts = [inside, outside]
         out = filter_self_hardware(pts)
         assert out == [outside]
 
     def test_disabled_passthrough(self):
-        pts = [_mk_point(x=0.15, y=0.30, z=0.28)]
+        pts = [_mk_point(x=0.10, y=0.10, z=0.20)]
         cfg = SelfMaskConfig(enabled=False)
         assert filter_self_hardware(pts, cfg) == pts
 
@@ -225,15 +225,15 @@ class TestSelfHardwareMask:
 class TestTracksAndLowObstacles:
 
     def test_track_side_clearance(self):
-        left_near = _mk_point(x=-0.25, y=0.15, z=0.05)
-        right_far = _mk_point(x=0.25, y=0.40, z=0.05)
+        left_near = _mk_point(x=-0.32, y=0.15, z=0.05)
+        right_far = _mk_point(x=0.32, y=0.40, z=0.05)
         center = _mk_point(x=0.0, y=0.30, z=0.05)      # 车身内，忽略
         left, right = track_side_clearance([left_near, right_far, center])
         assert left == pytest.approx(0.15)
         assert right == pytest.approx(0.40)
 
     def test_low_obstacle_count(self):
-        gravel = _mk_point(x=0.1, y=0.8, z=0.06)        # 低矮碎石
+        gravel = _mk_point(x=0.1, y=0.8, z=0.03)        # 低矮碎石（≤4 cm）
         tall = _mk_point(x=0.0, y=0.9, z=0.30)          # 高障碍，不算低矮
         count, nearest = count_low_obstacles([gravel, tall])
         assert count == 1
@@ -242,8 +242,9 @@ class TestTracksAndLowObstacles:
     def test_guard_exposes_track_clearance(self):
         from bunker_mini.obstacle import ObstacleGuard
         frame = SimpleNamespace(points=[
-            _mk_point(x=-0.25, y=0.10, z=0.05),
-            _mk_point(x=0.25, y=0.40, z=0.05),
+            _mk_point(x=-0.32, y=0.10, z=0.05),
+            _mk_point(x=0.32, y=0.40, z=0.05),
+            _mk_point(x=0.05, y=0.40, z=0.03),
         ])
         lidar = SimpleNamespace(is_receiving=True, latest_frame=frame)
         guard = ObstacleGuard(lidar)  # type: ignore[arg-type]
@@ -252,10 +253,9 @@ class TestTracksAndLowObstacles:
         assert right == pytest.approx(0.40)
         assert guard.track_scrape_risk(gap_m=0.12)
         assert not guard.track_scrape_risk(gap_m=0.05)
-        # 两个点 z=0.05 均落在低矮障碍窗口内
         count, nearest = guard.front_low_obstacles()
-        assert count == 2
-        assert nearest == pytest.approx(0.10)
+        assert count == 1
+        assert nearest == pytest.approx(0.40)
 
 
 # --------------------------------------------------------------------------

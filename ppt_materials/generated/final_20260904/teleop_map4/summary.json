@@ -1,0 +1,23 @@
+{
+  "session": "teleop_map4",
+  "live_rows": 941,
+  "path_m": 8.746,
+  "disp_m": 4.382,
+  "start_xy": [
+    -0.001,
+    0.004
+  ],
+  "end_xy": [
+    3.605,
+    -2.486
+  ],
+  "yaw_range_deg": [
+    -134.1,
+    0.2
+  ],
+  "end_yaw_deg": -126.4,
+  "localmap_end": 7847,
+  "qual_min": 0.5037,
+  "qual_max": 1.0,
+  "pose_froze": false
+}

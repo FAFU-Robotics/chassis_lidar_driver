@@ -1,0 +1,10 @@
+pose_hz=6.416
+pose_quality=0.8775510191917419
+pose_frame=map
+child_frame=base_link
+pose_xyz=0.0032,-0.0014,0.0003
+yaw_deg=0.01
+raw_points=71032
+localmap_points=1111
+localmap_suitable=False
+pose_hz_ros2_topic_hz=7.46

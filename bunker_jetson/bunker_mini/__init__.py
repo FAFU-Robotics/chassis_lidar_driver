@@ -21,7 +21,9 @@ from .obstacle import (
     ObstaclePolicy,
     count_low_obstacles,
     hull_clearance,
+    make_obstacle_policy,
     near_collision_hits,
+    office_obstacle_policy,
     track_side_clearance,
 )
 from .occupancy import OccupancyGrid
@@ -74,6 +76,8 @@ __all__ = [
     "Navigator",
     "ObstacleGuard",
     "ObstaclePolicy",
+    "make_obstacle_policy",
+    "office_obstacle_policy",
     "ObstacleSectors",
     "OccupancyGrid",
     "OdometerFeedback",

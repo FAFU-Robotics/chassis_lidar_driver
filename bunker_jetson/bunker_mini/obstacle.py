@@ -7,8 +7,9 @@
 
 等级（默认值可配置）::
 
-    障碍 < stop_distance (0.3 m)   → 立即停车（blocked）
-    stop ≤ 障碍 < slow_distance(0.8 m) → 按比例限速（距离越近越慢）
+    立障 < stop_distance (0.35 m)   → 立即停车（blocked）
+    坑/负障碍 < pit_stop (0.60 m) → 立即停车（地面盲区比立障更大）
+    stop ≤ 障碍 < slow_distance(0.90 m) → 按比例限速（距离越近越慢）
     障碍 ≥ slow_distance          → 放行
 
 雷达无数据（未连线 / 掉线）时不拦截指令，但会定期打印警告——开发阶段
@@ -20,6 +21,7 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 import time
 from dataclasses import dataclass, field
 from typing import Callable, Optional
@@ -32,63 +34,70 @@ logger = logging.getLogger(__name__)
 
 _DEG_PER_RAD: float = 180.0 / 3.141592653589793
 
-# BUNKER MINI 2.0 车宽 ≈ 0.36 m（履带外侧），离地间隙 ≈ 0.14 m。
-# 履带外扩检测区：车身半宽外侧 ±[0.19, 0.38]，前伸到 0.45 m（D 迁移）。
-VEHICLE_WIDTH_M: float = 0.36
-TRACK_HALF_WIDTH_M: float = 0.19
-TRACK_OUTER_X_M: float = 0.38
+# 实车外形（用户实测）：长 690 × 宽 570 × 高 335 mm，离地 80 mm。
+# 雷达在车头正中、略高出车顶，约 350 mm AGL。建图光心高度仍用 0.365 m
+#（RANSAC 地面 y≈-0.36），避障包络按 0.57×0.08 实车，不要把建图 TF 改成 0.35。
+VEHICLE_LENGTH_M: float = 0.69
+VEHICLE_WIDTH_M: float = 0.57
+VEHICLE_HEIGHT_M: float = 0.335
+GROUND_CLEARANCE_M: float = 0.08
+LIDAR_MOUNT_HEIGHT_M: float = 0.35
+# 履带外扩检测区：半宽外侧到刮蹭带 ~0.40 m。
+TRACK_HALF_WIDTH_M: float = 0.285
+TRACK_OUTER_X_M: float = 0.40
 TRACK_Y_MIN_M: float = 0.05
-TRACK_Y_MAX_M: float = 0.45
-# 低矮障碍（碎石）检测区：车前近场、高度低于离地间隙范围（D 迁移）
-LOW_OBS_X_HALF_M: float = 0.38
+TRACK_Y_MAX_M: float = 0.50
+# 低矮障碍（碎石）检测区：低于离地间隙、能碾过的 3–4 cm 凸起。
+# y 从 ~0.30 m 起：雷达下视约 45° 时地面从 h/tan45°≈0.35 m 才进视场。
+LOW_OBS_X_HALF_M: float = 0.30
+LOW_OBS_Y_MIN_M: float = 0.30
 LOW_OBS_Y_MAX_M: float = 1.2
 LOW_OBS_Z_MIN_M: float = 0.02
-LOW_OBS_Z_MAX_M: float = 0.12
-# 车前立体盒：人/椅/纸箱。y 从 0.16 起，躲开雷达前方线缆/支架自扫。
-# 贴到 0.16 m 以内后立体盒会故意变瞎——近场立柱/椅腿/头顶椅面另见
-# near_collision_hits()，否则会钻进办公椅五星腿（现场照片）。
+LOW_OBS_Z_MAX_M: float = 0.04
+# 车前立体盒：立障/岩/人。y 从 0.16 起，躲开雷达前方线缆/前唇自扫。
+# 贴到 0.16 m 以内后立体盒会故意变瞎——近场立柱/细杆/头顶另见
+# near_collision_hits()。z 上限盖住车体高度+一点，溶洞高顶（0.8 m+）进不来。
 BODY_BOX_Y_MIN_M: float = 0.16
 BODY_BOX_Y_MAX_M: float = 2.5
-BODY_BOX_X_HALF_M: float = 0.42
+BODY_BOX_X_HALF_M: float = 0.345
 BODY_BOX_Z_MIN_M: float = 0.08
-BODY_BOX_Z_MAX_M: float = 0.70
+BODY_BOX_Z_MAX_M: float = 0.55
 BODY_MIN_POINTS: int = 4
 BODY_CLOSE_M: float = 0.36
-# 近场立柱/椅座：与立体盒对齐（y≥0.16），躲开雷达支架/线缆/电源自扫。
-# 贴到 0.16 m 以内靠 furniture_latch（接近时已锁）+ 履带刮蹭，不再用
-# y=0.04 的旧盒子——空地自扫会被当成「钻进桌椅」。
+# 近场立柱：与立体盒对齐（y≥0.16），躲开雷达支架/线缆/电源自扫。
 NEAR_Y_MIN_M: float = 0.16
 NEAR_Y_MAX_M: float = 0.55
-NEAR_X_HALF_M: float = 0.30
-NEAR_Z_MIN_M: float = 0.14
+NEAR_X_HALF_M: float = 0.32
+NEAR_Z_MIN_M: float = 0.08
 NEAR_Z_MAX_M: float = 0.50
-# 履带旁细椅腿：不在 ±30° 锥里，y 可小于立体盒门槛。
-LEG_X_MIN_M: float = 0.16
-LEG_X_MAX_M: float = 0.44
+# 履带旁细杆：不在 ±fov/2 锥里，y 可小于立体盒门槛。
+LEG_X_MIN_M: float = 0.22
+LEG_X_MAX_M: float = 0.40
 LEG_Y_MIN_M: float = 0.04
 LEG_Y_MAX_M: float = 0.50
 LEG_Z_MIN_M: float = 0.04
 LEG_Z_MAX_M: float = 0.85
-# 已钻进桌椅 / 低矮钟乳石：只收到「会打到车体」的高度。
-# 溶洞高顶（雷达上方 0.8 m+）不得进这里，否则室内椅子补丁会在月面误刹。
-CANOPY_X_HALF_M: float = 0.36
+# 已钻进低矮钟乳/悬空物：只收到「会打到车体」的高度。
+# 车顶在雷达下方约 15 mm，不得把车顶当椅面；溶洞高顶（雷达上方 0.8 m+）也不进。
+CANOPY_X_HALF_M: float = 0.28
 CANOPY_Y_MIN_M: float = 0.12
 CANOPY_Y_MAX_M: float = 0.40
-CANOPY_Z_MIN_M: float = 0.30
+CANOPY_Z_MIN_M: float = 0.32
 CANOPY_Z_MAX_M: float = 0.50
 CANOPY_MIN_POINTS: int = 12
 CANOPY_X_SPAN_M: float = 0.20
-# 雷达光心附近的车体/线缆/电源：空地也会有，不得当椅面或立柱。
-# 比旧盒子略放宽：现场空地自扫常落在 y=0.18～0.24，旧门槛会漏进近场急停。
-MOUNT_CLUTTER_X_HALF_M: float = 0.26
-MOUNT_CLUTTER_Y_MAX_M: float = 0.24
-MOUNT_CLUTTER_Z_MAX_M: float = 0.22
-# 车体扫过体积：钟乳石/悬空岩。z 从 0.16 起，躲开地面噪声和保险杠回波。
-HULL_X_HALF_M: float = 0.20
-HULL_Y_MIN_M: float = 0.20
+# 雷达光心附近的前唇/线缆/电源：空地也会有，不得当立柱。
+# 车头安装：保险杠在传感器正下前方，不是旧的车顶支架盒子。
+MOUNT_CLUTTER_X_HALF_M: float = 0.22
+MOUNT_CLUTTER_Y_MAX_M: float = 0.18
+MOUNT_CLUTTER_Z_MIN_M: float = 0.05
+MOUNT_CLUTTER_Z_MAX_M: float = 0.28
+# 车体扫过体积：钟乳石/悬空岩。x 按半车宽，z 盖住车体高度。
+HULL_X_HALF_M: float = 0.28
+HULL_Y_MIN_M: float = 0.18
 HULL_Y_MAX_M: float = 1.20
-HULL_Z_MIN_M: float = 0.16
-HULL_Z_MAX_M: float = 0.42
+HULL_Z_MIN_M: float = 0.08
+HULL_Z_MAX_M: float = 0.40
 HULL_MIN_POINTS: int = 3
 HULL_STALACTITE_Z_M: float = 0.22
 NEAR_COLUMN_MIN_POINTS: int = 3
@@ -96,12 +105,15 @@ NEAR_COLUMN_CLOSE_M: float = 0.28
 NEAR_LEG_MIN_POINTS: int = 3
 NEAR_LEG_CLOSE_M: float = 0.18
 NEAR_HARD_STOP_M: float = 0.32
+VFH_SAFETY_MARGIN_M: float = 0.08
+OA_SCENE_ENV: str = "BUNKER_OA_SCENE"
 
 
 def count_low_obstacles(
     points: list[LidarPoint],
     *,
     x_half_m: float = LOW_OBS_X_HALF_M,
+    y_min_m: float = LOW_OBS_Y_MIN_M,
     y_max_m: float = LOW_OBS_Y_MAX_M,
     z_min_m: float = LOW_OBS_Z_MIN_M,
     z_max_m: float = LOW_OBS_Z_MAX_M,
@@ -117,7 +129,7 @@ def count_low_obstacles(
     for p in points:
         if (
             abs(p.x) <= x_half_m
-            and 0.0 < p.y <= y_max_m
+            and y_min_m < p.y <= y_max_m
             and z_min_m <= p.z <= z_max_m
         ):
             count += 1
@@ -156,11 +168,11 @@ def track_side_clearance(
 
 
 def _is_mount_clutter(x: float, y: float, z: float) -> bool:
-    """雷达前方线缆/支架/电源，空地也会有。"""
+    """雷达前方线缆/前唇/电源，空地也会有。"""
     return (
         abs(x) <= MOUNT_CLUTTER_X_HALF_M
-        and y < MOUNT_CLUTTER_Y_MAX_M
-        and 0.0 <= z <= MOUNT_CLUTTER_Z_MAX_M
+        and 0.0 <= y < MOUNT_CLUTTER_Y_MAX_M
+        and MOUNT_CLUTTER_Z_MIN_M <= z <= MOUNT_CLUTTER_Z_MAX_M
     )
 
 
@@ -255,19 +267,25 @@ def hull_clearance(points: list[LidarPoint]) -> Optional[float]:
 
 @dataclass
 class ObstaclePolicy:
-    """Tuning parameters for the obstacle guard."""
+    """Tuning parameters for the obstacle guard.
 
-    stop_distance_m: float = 0.3      # 小于该距离 → 停车
-    slow_distance_m: float = 0.8      # 小于该距离 → 限速
+    默认按溶洞/赛场（``BUNKER_OA_SCENE=cave``）：不锁办公椅 0.55 m 家具闸。
+    实验室椅子场景用 ``make_obstacle_policy`` 或 ``BUNKER_OA_SCENE=office``。
+    """
+
+    stop_distance_m: float = 0.35     # 立障小于该距离 → 停车（地面盲区外沿）
+    slow_distance_m: float = 0.90     # 小于该距离 → 限速
     slow_speed_factor: float = 0.40   # 贴边时速度降至该比例（0~1）；0.25 空地误限时几乎挪不动
-    fov_deg: float = 60.0             # 前方探测张角（车头方向 ± fov/2）
+    fov_deg: float = 80.0             # 前方探测张角（车头方向 ± fov/2；0.57 m 车宽需比 60° 更开）
     obstacle_event_cooldown_s: float = 5.0  # 同一障碍事件去重窗口
     max_steer_offset_deg: float = 45.0      # 转向时前方探测方向的偏置上限
 
     # --- stage-2 rugged-terrain (月球溶洞等凹凸路况) 参数 ---
     step_limit_m: float = DEFAULT_STEP_LIMIT_M      # 允许的台阶/坑深度，超出视为不可通行
     slope_slow_factor: float = 0.5                  # 坡面上限速比例（不急停）
-    terrain_lookahead_m: float = 1.0                # 通过性提前减速的探测距离
+    terrain_lookahead_m: float = 1.2                # 通过性提前减速的探测距离
+    pit_stop_m: float = 0.60                        # 已测到的坑/负障碍急停距离（大于立障 stop）
+    pit_void_stop: bool = False                     # True：无地面回波也急停（0 俯仰 Airy 会误刹）
     stop_confirm_frames: int = 3                    # 急停需连续 N 帧确认（抗单帧毛刺）
 
     # --- 速度自适应安全距离（制动距离建模） ---
@@ -280,14 +298,14 @@ class ObstaclePolicy:
     # 一帧为 False 就立即放行，会造成「急停→前进→急停→前进」的抖动。
     # 急停后保持停车/慢速至少 stop_hold_s，直到障碍稳定消失才真正放行。
     stop_hold_s: float = 0.5
-    # 人/椅：立体盒内近于该距离直接当墙急停（0.10 m/s 时普通 stop 只有 0.36 m，
-    # 椅背常在 0.45 m，只会减速然后点云一闪又放行）。
-    body_stop_distance_m: float = 0.55
+    # 立障立体盒急停距离。溶洞默认贴近 stop_distance；办公椅 0.45 m 背
+    # 需要 0.55（见 ``office_obstacle_policy`` / ``BUNKER_OA_SCENE=office``）。
+    body_stop_distance_m: float = 0.38
     # 扇区/立体盒单帧丢点时，短时沿用上次距离，避免放行全速。
     range_hold_s: float = 0.40
-    # 人/椅一旦进入急停距离，前进方向保持急停这么久。Airy 手册盲区 0.1 m，
-    # 钻进椅腿后中柱回波变 0，没有这档就会松闸顶上去。
-    furniture_latch_s: float = 0.8
+    # 人/椅一旦进入急停距离，前进方向保持急停这么久。溶洞默认 0：木块
+    # 目标只减速接近，不按办公椅锁死。实验室椅子用 0.8。
+    furniture_latch_s: float = 0.0
     # 履带外侧近于该间隙按墙急停（原先只减速，照片里履带已经顶上椅腿）。
     track_stop_gap_m: float = 0.12
     # 溶洞口/陨石坑：看不见地面且正前方无回波时不得全速冲（只限速）。
@@ -308,6 +326,8 @@ class ObstaclePolicy:
         self.range_hold_s = max(0.0, self.range_hold_s)
         self.furniture_latch_s = max(0.0, self.furniture_latch_s)
         self.track_stop_gap_m = max(0.02, self.track_stop_gap_m)
+        self.pit_stop_m = max(self.stop_distance_m, self.pit_stop_m)
+        self.terrain_lookahead_m = max(self.pit_stop_m, self.terrain_lookahead_m)
         if self.step_limit_m <= 0:
             raise ValueError("step_limit_m must be > 0")
 
@@ -322,6 +342,45 @@ class ObstaclePolicy:
         slow = self.slow_distance_m + self.slow_per_v * v
         slow = max(slow, stop + 0.3)  # 保证有减速过渡带
         return stop, slow
+
+
+def oa_scene_name() -> str:
+    """``cave``（默认）或 ``office`` / ``lab`` / ``chair``。"""
+    return (os.environ.get(OA_SCENE_ENV) or "cave").strip().lower()
+
+
+def office_obstacle_policy(**overrides) -> ObstaclePolicy:
+    """实验室椅子：0.55 m 人体/椅背闸 + 丢点保持。"""
+    kwargs = dict(
+        furniture_latch_s=0.8,
+        body_stop_distance_m=0.55,
+        pit_void_stop=False,
+    )
+    kwargs.update(overrides)
+    return ObstaclePolicy(**kwargs)
+
+
+def make_obstacle_policy(
+    *,
+    step_limit_m: Optional[float] = None,
+    **overrides,
+) -> ObstaclePolicy:
+    """按 ``BUNKER_OA_SCENE`` 生成守卫策略；agent / run_agent 入口用这个。"""
+    scene = oa_scene_name()
+    office = scene in ("office", "lab", "chair")
+    kwargs: dict = dict(
+        step_limit_m=(
+            DEFAULT_STEP_LIMIT_M if step_limit_m is None else float(step_limit_m)
+        ),
+    )
+    if office:
+        kwargs.update(
+            furniture_latch_s=0.8,
+            body_stop_distance_m=0.55,
+            pit_void_stop=False,
+        )
+    kwargs.update(overrides)
+    return ObstaclePolicy(**kwargs)
 
 
 class ObstacleGuard:
@@ -341,7 +400,7 @@ class ObstacleGuard:
     ) -> None:
         self._lidar = lidar
         self._policy = policy or ObstaclePolicy()
-        self._require_sensor = require_sensor
+        self._require_sensor = bool(require_sensor)
         self._blocked_callbacks: list[Callable[[float, str], None]] = []
         self._last_blocked_at: float = 0.0
         self._last_blocked_reason: str = ""
@@ -370,7 +429,10 @@ class ObstacleGuard:
         # VFH 几何缺口转向器（用于 gap_heading / steer_away_deg）
         self._vfh = VFHPlanner(VFHConfig(
             vehicle_width_m=VEHICLE_WIDTH_M,
+            safety_margin_m=VFH_SAFETY_MARGIN_M,
             clear_distance_m=0.6,
+            stop_base_m=0.35,
+            slow_base_m=0.90,
         ))
 
     def _ema(self, prev: Optional[float], value: Optional[float]) -> Optional[float]:
@@ -392,6 +454,10 @@ class ObstacleGuard:
         return alpha * value + (1.0 - alpha) * prev
 
     # -- observation -----------------------------------------------------
+
+    def set_require_sensor(self, value: bool) -> None:
+        """点云首帧到达后升级为掉线必停；lidar_off 再降回透传。"""
+        self._require_sensor = bool(value)
 
     def on_blocked(self, callback: Callable[[float, str], None]) -> None:
         """Register a callback invoked on a hard stop with (distance_m, reason)."""
@@ -568,13 +634,14 @@ class ObstacleGuard:
         blocked_d = self._ema(self._blocked_dist_ema, blocked_raw)
         self._blocked_dist_ema = blocked_d
 
-        # 先判断“是否需要急停”——不可通行地形进入急停区
+        # 先判断“是否需要急停”——不可通行地形进入坑急停区（比立障 stop 更远）
         need_stop = False
-        if blocked_d is not None and blocked_d <= stop_d:
+        pit_stop = max(stop_d, policy.pit_stop_m)
+        if blocked_d is not None and blocked_d <= pit_stop:
             need_stop = True
         if d is not None and d <= stop_d and not self._is_low_gravel(terrain):
             need_stop = True
-        # 人/椅：0.45 m 椅背高于普通 stop（低速约 0.36 m），必须按墙急停。
+        # 立障立体盒：溶洞默认 ~0.38 m；办公椅 0.45 m 背需 body_stop=0.55。
         body_stop = max(stop_d, policy.body_stop_distance_m)
         furniture_kind = ""
         if (not reversing and body_d is not None
@@ -582,8 +649,8 @@ class ObstacleGuard:
             need_stop = True
             furniture_kind = "body"
             self._arm_furniture_latch(body_d, "body")
-        # 近场立柱/椅腿：旧逻辑「看见就急停」会把空地单点自扫锁死 2s。
-        # 只有已经贴上来，或头顶椅面（钻进去了），才硬停。
+        # 近场立柱/细杆：旧逻辑「看见就急停」会把空地单点自扫锁死 2s。
+        # 只有已经贴上来，或头顶悬空（钻进去了），才硬停。
         if near_d is not None and not reversing:
             if near_kind == "canopy" or near_d <= max(stop_d, NEAR_HARD_STOP_M):
                 need_stop = True
@@ -618,6 +685,16 @@ class ObstacleGuard:
                     d = self._furniture_latch_d
 
         furniture_now = bool(furniture_kind)
+        if (
+            v > 0
+            and policy.pit_void_stop
+            and self._has_terrain
+            and terrain.unclear
+            and d is None
+            and blocked_d is None
+            and not reversing
+        ):
+            need_stop = True
 
         if need_stop:
             self._stop_confirm_count += 1
@@ -712,6 +789,8 @@ class ObstacleGuard:
         return v, w, False
 
     def _arm_furniture_latch(self, distance_m: Optional[float], kind: str) -> None:
+        if self._policy.furniture_latch_s <= 0:
+            return
         self._furniture_lock = True
         self._furniture_latch_until = time.monotonic() + self._policy.furniture_latch_s
         if distance_m is not None:
@@ -747,6 +826,8 @@ class ObstacleGuard:
             d0 = d if d is not None else self._furniture_latch_d
             extra = f"{d0:.2f} m " if d0 is not None else ""
             return f"近处家具回波刚消失（Airy 0.1 m 盲区），{extra}保持急停"
+        if terrain.unclear and d is None and self._policy.pit_void_stop:
+            return "前方无地面回波（疑似坑/悬崖），急停"
         if terrain.negative_obstacle_distance_m is not None:
             return (
                 f"前方地形下坠/悬崖 {terrain.negative_obstacle_distance_m:.2f} m，"
@@ -760,7 +841,9 @@ class ObstacleGuard:
         if blocked_d is not None:
             return f"前方地形不可通行 {blocked_d:.2f} m，急停"
         if d is not None and d <= self._policy.body_stop_distance_m:
-            return f"前方人体/椅背 {d:.2f} m，急停"
+            if self._policy.furniture_latch_s > 0:
+                return f"前方人体/椅背 {d:.2f} m，急停"
+            return f"前方立障 {d:.2f} m，急停"
         return f"障碍 {d:.2f} m 距离过近，急停" if d is not None else "前方地形不可通行，急停"
 
     def front_terrain_summary(self) -> dict:

@@ -142,6 +142,7 @@
   .row button { flex: 0 0 auto; }
   .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
   .grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+  .grid4 { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 8px; }
   .drive-bar {
     display: flex; flex-direction: column; gap: 4px;
     padding: 10px 12px; border-radius: 10px; margin-bottom: 12px;
@@ -172,7 +173,56 @@
   .swatch { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
   .swatch.pose { background: var(--cyan); }
   .swatch.goal { background: var(--ok); }
+  .swatch.path { background: #e8b84a; }
   .swatch.origin { background: var(--warn); }
+  .swatch.occ { background: #cfd6de; }
+  .swatch.hit { background: #111; }
+  .swatch.blk { background: #8b1e2d; }
+  .swatch.sketch { background: #5d6d7e; }
+  .swatch.free { background: rgba(70, 110, 90, 0.9); }
+  .swatch.cloud { background: #7aa2ff; }
+  .swatch.hull { background: transparent; box-shadow: inset 0 0 0 2px #5ec8ff; }
+  .pipe { display: flex; flex-direction: column; gap: 6px; margin: 0 0 12px; }
+  .pipe .step {
+    display: grid; grid-template-columns: 28px 1fr; gap: 8px; align-items: start;
+    padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line);
+    background: #0d141c;
+  }
+  .pipe .step.ok { border-color: #2f7a55; background: var(--ok-dim); }
+  .pipe .step.wait { color: var(--muted); }
+  .pipe .step.bad { border-color: #7a2a32; background: var(--bad-dim); }
+  .pipe .n {
+    width: 22px; height: 22px; border-radius: 50%; display: flex; align-items: center;
+    justify-content: center; font-size: 12px; font-weight: 700; background: #1b2733;
+  }
+  .pipe .step.ok .n { background: #2f7a55; color: #fff; }
+  .pipe .step.bad .n { background: #7a2a32; color: #fff; }
+  .pipe .t { font-size: 13px; }
+  .pipe .d { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  #autoCanvas {
+    width: 100%; height: 360px; background: #0b1218; border: 1px solid var(--line);
+    border-radius: 10px; cursor: crosshair; touch-action: none;
+  }
+  #autoCanvas.panning { cursor: grabbing; }
+  #autoZoomBar { margin-top: 8px; }
+  #autoZoomLbl {
+    color: var(--muted); font-size: 12px; min-width: 3.6em;
+    font-family: ui-monospace, Menlo, monospace;
+  }
+  .viz-split { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  #occCanvas, #cloudCanvas {
+    width: 100%; height: 280px; background: #0b1218; border: 1px solid var(--line);
+    border-radius: 10px; cursor: crosshair;
+  }
+  #cloudCanvas { cursor: default; }
+  .lidar-stat {
+    display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; margin: 0 0 12px;
+  }
+  .lidar-stat .kv { padding: 10px 12px; }
+  @media (max-width: 960px) {
+    .viz-split { grid-template-columns: 1fr; }
+    .lidar-stat { grid-template-columns: 1fr; }
+  }
   .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 8px; }
   .chips button { padding: 6px 8px; font-size: 12px; }
   label.fld { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
@@ -186,6 +236,9 @@
   }
   .tracks button:last-child { border-bottom: 0; }
   .tracks button.sel { background: var(--cyan-dim); }
+  .tracks button.bad { color: var(--bad); }
+  .tracks button.warn { color: var(--warn); }
+  #trackHealth { margin: 8px 0 0; color: var(--muted); font-size: 13px; white-space: pre-wrap; }
   .log {
     margin-top: 14px; background: #0c131a; border: 1px solid var(--line);
     border-radius: 14px; padding: 12px 14px; min-height: 140px;
@@ -238,6 +291,7 @@
     .sheet-grid { grid-template-columns: 1fr; }
     .nav-split { grid-template-columns: 1fr; }
     .tiles { grid-template-columns: 1fr; }
+    .grid4 { grid-template-columns: 1fr 1fr; }
   }
 </style>
 </head>
@@ -262,6 +316,7 @@
   <a href="#/home" data-page="home">总览</a>
   <a href="#/drive" data-page="drive">遥控 WASD</a>
   <a href="#/nav" data-page="nav">任务 / 导航</a>
+  <a href="#/autonav" data-page="autonav">自动导航</a>
   <a href="#/tracks" data-page="tracks">轨迹</a>
   <a href="#/lidar" data-page="lidar">雷达 / 地图</a>
   <a href="#/chassis" data-page="chassis">底盘状态</a>
@@ -291,9 +346,14 @@
         <p>键盘或触控方向键开车、调档。笔记本 HID 走 TCP :9100。</p>
       </a>
       <a class="tile" href="#/nav">
-        <div class="tag">任务</div>
+        <div class="tag">短距</div>
         <h3>任务 / 导航</h3>
-        <p>开环 move、世界坐标 goto、探路 fo、回原点、取消任务。</p>
+        <p>开环 move、里程系短距 goto、探路 fo。坐标系是启动或重置原点，不是 SLAM 图。</p>
+      </a>
+      <a class="tile" href="#/autonav">
+        <div class="tag">赛题主路</div>
+        <h3>自动导航</h3>
+        <p>默认出发系：相对开机原点开到给定坐标（管道入口）。可切现场图看雷达格子并点目标。有合格图后可切地图系。建图时订 /rslidar_points 近场刹车，不抢 6699。</p>
       </a>
       <a class="tile" href="#/tracks">
         <div class="tag">录制</div>
@@ -303,7 +363,7 @@
       <a class="tile" href="#/lidar">
         <div class="tag">传感器</div>
         <h3>雷达 / 地图</h3>
-        <p>雷达开关、工控机桌面点云/地图窗、位姿标定、导入地图。</p>
+        <p>雷达开关（建图时改订 /rslidar_points）。占用格和俯视点云画在本页，不依赖工控机桌面窗。</p>
       </a>
       <a class="tile" href="#/chassis">
         <div class="tag">诊断</div>
@@ -349,7 +409,7 @@
   <section class="page" id="page-nav">
     <div class="page-head">
       <h1>任务 / 导航</h1>
-      <p>move 是速度 × 时间；goto 是世界坐标。两块不是一回事。</p>
+      <p>短距里程 goto：原点是启动或「重置原点」，现场占用格大约 5 秒衰减。有图长距请去「自动导航」。</p>
     </div>
       <div class="card panel">
         <h2>任务 / 导航</h2>
@@ -363,6 +423,7 @@
             <div><span class="swatch origin"></span>原点 (0, 0) = 启动或「重置原点」</div>
             <div><span class="swatch pose"></span>当前位姿（蓝三角 = 车头）</div>
             <div><span class="swatch goal"></span>goto 目标（世界坐标，不是前进米数）</div>
+            <div><span class="swatch path"></span>A* 规划折线（直线虚线 = 没扫到或规划失败）</div>
             <p class="hint" id="poseHint">x 向前（启动时车头），y 向左。想直行固定距离请用下面的 move，不要填 goto。</p>
           </div>
         </div>
@@ -400,18 +461,19 @@
         </div>
 
         <div class="subcard">
-          <h3>导航 goto · 世界坐标 (x, y)</h3>
-          <p class="lead">走到里程系里的绝对点。需要雷达在线。填 (1, 0) 是「原点前方 1 m」，不是「再往前开 1 m」。当前若不在原点，实际路程是当前位置到该点的直线/绕障。</p>
+          <h3>导航 goto · 里程系短距 (x, y)</h3>
+          <p class="lead">走到轮式里程原点下的绝对点，不是定位地图坐标。需要雷达在线。自动导航进行中时这里会拒绝。正在导航时再点一次会改目标。</p>
           <div class="chips">
             <button type="button" data-goto="1,0">原点前 1m</button>
             <button type="button" data-goto="2,0">原点前 2m</button>
             <button type="button" data-goto="0,1">原点左 1m</button>
             <button type="button" data-goto-rel="1,0">车头前方 1m</button>
           </div>
-          <div class="grid3">
+          <div class="grid4">
             <label class="fld"><span>目标 x (m)</span><input id="gx" value="1" inputmode="decimal" autocomplete="off"/></label>
             <label class="fld"><span>目标 y (m)</span><input id="gy" value="0" inputmode="decimal" autocomplete="off"/></label>
-            <label class="fld"><span>限速 可选 ≤0.5</span><input id="gs" placeholder="默认 0.30" inputmode="decimal" autocomplete="off"/></label>
+            <label class="fld"><span>限速 m/s ≤0.5</span><input id="gs" value="0.15" inputmode="decimal" autocomplete="off"/></label>
+            <label class="fld"><span>终点航向 ° 可选</span><input id="gyaw" placeholder="不填=接近方向" inputmode="decimal" autocomplete="off"/></label>
           </div>
           <div class="preview" id="gotoPreview"></div>
           <div class="row">
@@ -420,13 +482,87 @@
             <button type="button" data-act="map_return">应用 map_return</button>
           </div>
         </div>
+        <div class="subcard">
+          <h3>轮距标定（转弯后位姿才准）</h3>
+          <p class="lead">差速积分用左右履带中心距。默认 0.50 m。标定：停在标记点 → 重置原点 → WASD 原地转到已知角（如地面 90°）→ 填实测航向点标定。结果写入工控机 wheelbase.local，重启仍有效。</p>
+          <p class="hint" id="wbHint">还没有轮距/残差。开雷达后看状态栏 yaw 旁的定位来源。</p>
+          <div class="grid3">
+            <label class="fld"><span>直接设轮距 (m)</span><input id="wbSet" placeholder="0.48" inputmode="decimal" autocomplete="off"/></label>
+            <label class="fld"><span>地面实测航向 °</span><input id="wbYaw" placeholder="例如 90" inputmode="decimal" autocomplete="off"/></label>
+            <div></div>
+          </div>
+          <div class="row">
+            <button type="button" data-act="set_wheelbase">应用轮距</button>
+            <button class="primary" type="button" data-act="calibrate_wheelbase">按实测航向标定</button>
+          </div>
+        </div>
       </div>
+  </section>
+
+  <section class="page" id="page-autonav">
+    <div class="page-head">
+      <h1>自动导航</h1>
+      <p>默认「出发系」：相对启动或重置原点，对应赛题给的管道入口相对坐标。有点云时长距离会用雷达只修航向，不改 XY。另有「现场图」：坐标仍是出发系，画布显示雷达占用格并可点击，格子会过期，不是建图。「地图系」仍要合格图 + TF 锁定。网页不启停 ROS。</p>
+    </div>
+    <div class="card panel">
+      <h2>流水线</h2>
+      <div id="autoPipe" class="pipe"></div>
+      <p class="hint" id="autoHint">还没有定位状态。连上控制台后会刷新。出发系不需要合格图即可前往。</p>
+      <div class="row">
+        <select id="autoFrame">
+          <option value="odom" selected>出发系（赛题主路）</option>
+          <option value="sketch">现场图（雷达示意，不建图）</option>
+          <option value="map">地图系（合格图 + 定位锁定）</option>
+        </select>
+        <select id="autoMap"></select>
+        <button type="button" data-act="autonav_select_map">选择此图（只记录）</button>
+        <button type="button" data-act="query">刷新状态</button>
+        <button type="button" data-act="autonav_map">刷新 2D 层</button>
+      </div>
+      <p class="hint" id="autoSsh">近场刹车：工控机跑 rslidar_sdk 后订 /rslidar_points，不抢 UDP 6699。地图系另需 SSH：maps/start_mola_localization.sh &lt;mapId&gt;，RViz 给初始位姿。</p>
+    </div>
+    <div class="card panel">
+      <h2>目标</h2>
+      <div id="autoBar" class="drive-bar idle">
+        <div><b id="autoKind">出发系</b></div>
+        <div id="autoDetail">填相对原点的 (x, y)。x 向前（启动车头），y 向左。WASD / 急停可接管。</div>
+      </div>
+      <canvas id="autoCanvas" width="720" height="360"></canvas>
+      <div class="row" id="autoZoomBar">
+        <button type="button" data-act="auto_zoom_in">放大</button>
+        <button type="button" data-act="auto_zoom_out">缩小</button>
+        <button type="button" data-act="auto_zoom_reset">复位视野</button>
+        <span id="autoZoomLbl">100%</span>
+      </div>
+      <div class="nav-legend" style="margin-top:8px">
+        <div><span class="swatch occ"></span>2D 点击层占用（仅地图系）</div>
+        <div><span class="swatch free"></span>已扫可走（现场图）</div>
+        <div><span class="swatch sketch"></span>现场占用格（点云伪地图）</div>
+        <div><span class="swatch blk"></span>现场不可通行格</div>
+        <div><span class="swatch cloud"></span>当前帧点云（可能有障碍）</div>
+        <div><span class="swatch hull"></span>车体碰撞框 0.69×0.57 m</div>
+        <div><span class="swatch pose"></span>车头方向（黄箭头）</div>
+        <div><span class="swatch goal"></span>目标</div>
+      </div>
+      <div class="grid4" style="margin-top:10px">
+        <label class="fld"><span id="axLab">出发 x (m)</span><input id="ax" value="1" inputmode="decimal" autocomplete="off"/></label>
+        <label class="fld"><span id="ayLab">出发 y (m)</span><input id="ay" value="0" inputmode="decimal" autocomplete="off"/></label>
+        <label class="fld"><span>限速 m/s</span><input id="as" value="0.15" inputmode="decimal" autocomplete="off"/></label>
+        <label class="fld"><span>终点航向 ° 可选</span><input id="ayaw" placeholder="不填=接近方向" inputmode="decimal" autocomplete="off"/></label>
+      </div>
+      <div class="preview" id="autoPreview"></div>
+      <div class="row">
+        <button class="ok" type="button" data-act="autonav_goto" id="btnAutonav">前往</button>
+        <button type="button" data-act="autonav_cancel">取消前往</button>
+      </div>
+      <p class="hint">滚轮放大缩小，拖动画布平移，单击选目标，双击复位视野。出发系不需要 2D 栅格。现场图可点占用格。地图系可点合格图。近障会刹；WASD 两页都有效。</p>
+    </div>
   </section>
 
   <section class="page" id="page-tracks">
     <div class="page-head">
       <h1>轨迹</h1>
-      <p>先点选或填写轨迹名，再录制 / 回放。文件在工控机 tracks/。</p>
+      <p>先点选或填写轨迹名，再录制 / 回放。停稳再开始、停稳再保存；只用网页 WASD。倒放只是粗回，到点后会按录制起点做里程系精停。</p>
     </div>
       <div class="card panel">
         <h2>轨迹</h2>
@@ -441,6 +577,7 @@
           <button type="button" data-act="task_submit">运输任务</button>
           <button class="ghost" type="button" data-act="tracks">刷新列表</button>
         </div>
+        <p class="hint" id="trackHealth">还没有回放结果。列表会标里程来源；没有可靠 0x311 的不能点 B / 往返。</p>
         <div class="tracks" id="trackList"><div class="hint" style="padding:8px">还没有轨迹列表，点刷新</div></div>
       </div>
   </section>
@@ -448,18 +585,39 @@
   <section class="page" id="page-lidar">
     <div class="page-head">
       <h1>雷达 / 地图</h1>
-      <p>点云和地图窗口开在工控机桌面，不是这台笔记本。</p>
+      <p>画面画在这台笔记本浏览器里。工控机桌面窗是可选项，开机服务默认没有 DISPLAY。</p>
     </div>
       <div class="card panel">
-        <h2>雷达 / 地图</h2>
+        <h2>雷达状态</h2>
+        <div class="lidar-stat" id="lidarStat">
+          <div class="kv"><h3>链路</h3><div id="lsLink">未开雷达</div></div>
+          <div class="kv"><h3>帧 / 点</h3><div id="lsFrames">—</div></div>
+          <div class="kv"><h3>前方 / 自检</h3><div id="lsFront">—</div></div>
+        </div>
+        <p class="hint" id="lsDiag"></p>
         <div class="row">
           <button class="ok" type="button" data-act="lidar_on">雷达开</button>
           <button type="button" data-act="lidar_off">雷达关</button>
           <button type="button" data-act="lidar_status">雷达自检</button>
-          <button type="button" data-act="lidar_map">地图窗</button>
-          <button type="button" data-act="point_cloud">点云窗</button>
-          <button type="button" data-act="view_both">点云+3D</button>
-          <button type="button" data-act="view_off">关窗口</button>
+          <button class="primary" type="button" data-act="lidar_refresh">刷新画面</button>
+          <label class="chk"><input id="lidarLive" type="checkbox" checked/>本页自动刷新</label>
+        </div>
+        <div class="viz-split">
+          <div>
+            <h3 style="margin:8px 0 6px;font-size:13px;color:var(--muted)">占用格（里程系，可点选 goto）</h3>
+            <canvas id="occCanvas" width="520" height="320"></canvas>
+            <div class="nav-legend" style="margin-top:8px">
+              <div><span class="swatch occ"></span>已扫自由　<span class="swatch hit"></span>障碍　<span class="swatch blk"></span>不可通行　<span class="swatch pose"></span>车</div>
+            </div>
+          </div>
+          <div>
+            <h3 style="margin:8px 0 6px;font-size:13px;color:var(--muted)">当前帧俯视（车头朝上）</h3>
+            <canvas id="cloudCanvas" width="520" height="320"></canvas>
+          </div>
+        </div>
+        <div class="row" style="margin-top:12px">
+          <button class="ghost" type="button" data-act="view_both">工控机桌面窗</button>
+          <button class="ghost" type="button" data-act="view_off">关桌面窗</button>
         </div>
         <div class="grid3">
           <input id="pax" placeholder="标定 x" inputmode="decimal" autocomplete="off"/>
@@ -469,9 +627,16 @@
         <div class="row">
           <button type="button" data-act="pose_align">位姿标定</button>
           <input id="mapFile" placeholder="工控机地图文件路径.json" autocomplete="off"/>
-          <button type="button" data-act="map_upload">导入地图</button>
+          <button type="button" data-act="map_upload">导入占用格</button>
         </div>
-        <p class="hint">点云/地图窗口开在工控机桌面，不是这台笔记本。本页不替代 kb：浏览器已经是 HID 遥控。</p>
+        <p class="hint">占用格是轮式里程累积的伪地图，用来辅助 goto，不是 MOLA 的 lab.simplemap。点左边图画布，会把世界坐标填进任务页的 goto。MOLA 三维仍在工控机 RViz/VNC；下面列表能看到存图文件，lab / lab2 不能当定位图。</p>
+      </div>
+      <div class="card panel">
+        <h2>工控机 maps/ 存图</h2>
+        <div class="row">
+          <button class="ghost" type="button" data-act="slam_maps">刷新存图列表</button>
+        </div>
+        <div class="tracks" id="slamMapList"><div class="hint" style="padding:8px">点刷新。lab / lab2 按建图记录不能当定位图。</div></div>
       </div>
   </section>
 
@@ -526,12 +691,23 @@ let vStep = 0.10, wStep = 0.40;
 let ws = null, hz = 0, n = 0, lastHz = performance.now(), rtt = null, applied = "—";
 let selectedTrack = "";
 let lastState = null;
+let lastOcc = null;
+let lastCloud = null;
+let lastLidarStatus = null;
+let lidarPollAt = 0;
+let lastAutoMap = null;
+let autoPollAt = 0;
+const AUTO_ZOOM_MIN = 0.4;
+const AUTO_ZOOM_MAX = 3;
+let autoCam = { zoom: 1, cx: null, cy: null, user: false };
+let autoDrag = null;
+let autoLastUpAt = 0;
 let driveLocal = {kind:"idle", remainS:null, t0:0, detail:""};
 document.getElementById("hostip").textContent = location.hostname;
-const DRIVE_CN = {idle:"空闲", move:"开环 move", goto:"导航 goto", mission:"任务中", replay:"轨迹回放"};
-const PAGES = ["home","drive","nav","tracks","lidar","chassis","events"];
+const DRIVE_CN = {idle:"空闲", move:"开环 move", goto:"导航 goto", mission:"任务中", replay:"轨迹回放", autonav:"自动导航"};
+const PAGES = ["home","drive","nav","autonav","tracks","lidar","chassis","events"];
 const PAGE_TITLE = {
-  home:"总览", drive:"遥控 WASD", nav:"任务 / 导航", tracks:"轨迹",
+  home:"总览", drive:"遥控 WASD", nav:"任务 / 导航", autonav:"自动导航", tracks:"轨迹",
   lidar:"雷达 / 地图", chassis:"底盘状态", events:"事件"
 };
 function currentPage() {
@@ -545,6 +721,19 @@ function showPage(name, push) {
   document.title = "Bunker · " + (PAGE_TITLE[page] || page);
   if (push !== false && currentPage() !== page) location.hash = "#/" + page;
   if (page === "nav") drawPose(lastState || {});
+  if (page === "autonav") {
+    renderAutonav(lastState || {});
+    drawAuto();
+    if (ws && ws.readyState === 1) sendCmd("autonav_map", {}, true);
+  }
+  if (page === "lidar") {
+    drawOcc();
+    drawCloud();
+    if (ws && ws.readyState === 1) {
+      send({t:"slam_maps"});
+      requestLidarVisuals(true);
+    }
+  }
   if (page === "chassis") {
     renderChassis(lastState);
     loadChassis();
@@ -601,13 +790,20 @@ function num(id) {
 function trackName() {
   return document.getElementById("trName").value.trim() || selectedTrack;
 }
-function sendCmd(action, extra) {
+function sendCmd(action, extra, quiet) {
   const msg = Object.assign({t:"c", action: action}, extra || {});
   send(msg);
-  log("下发 " + action + (extra ? " " + JSON.stringify(extra) : ""));
+  if (!quiet) log("下发 " + action + (extra ? " " + JSON.stringify(extra) : ""));
 }
 function handleAct(act) {
+  if (act === "auto_zoom_in") { autoZoomBy(1.25); return; }
+  if (act === "auto_zoom_out") { autoZoomBy(1 / 1.25); return; }
+  if (act === "auto_zoom_reset") { autoCamReset(); drawAuto(); return; }
   if (act === "find_object") {
+    if (((lastState && lastState.drive) || {}).kind === "autonav") {
+      log("自动导航进行中，探路已拒绝。先取消自动导航。");
+      return;
+    }
     sendCmd("find_object", {
       name: document.getElementById("foName").value.trim() || "target",
       approach: document.getElementById("foApproach").checked
@@ -615,19 +811,75 @@ function handleAct(act) {
     return;
   }
   if (act === "goto") {
+    if (((lastState && lastState.drive) || {}).kind === "autonav") {
+      log("自动导航进行中，任务页 goto 已拒绝。先取消自动导航。");
+      setDriveBar("bad", "无法 goto", "自动导航占用自主通道。");
+      return;
+    }
     const x = num("gx"), y = num("gy");
     if (x == null || y == null) { log("goto 需要 x / y"); return; }
     const lidar = (lastState && lastState.lidar) || {};
     if (!lidar.online) {
-      log("goto 需要雷达在线。先点「雷达开」，等顶栏雷达变成「在线」再导航。");
+      log("goto 需要雷达在线。先点「雷达开」。建图时不要抢 6699：点雷达开会订 /rslidar_points。");
       setDriveBar("bad", "无法 goto", "雷达离线：导航会被拒绝。先开雷达，或改用开环 move / WASD。");
       return;
     }
     const extra = {x:x, y:y};
     const s = num("gs");
     if (s != null) extra.speed = s;
+    const yaw = num("gyaw");
+    if (yaw != null) extra.yawDeg = yaw;
     sendCmd("goto", extra);
-    setDriveBar("run", "导航 goto", "已下发目标 (" + x.toFixed(2) + ", " + y.toFixed(2) + ")，等工控机确认…");
+    setDriveBar("run", "导航 goto", "已下发目标 (" + x.toFixed(2) + ", " + y.toFixed(2) + ")" +
+      (yaw != null ? "  yaw " + yaw.toFixed(0) + "°" : "") + "，等工控机确认…");
+    return;
+  }
+  if (act === "autonav_select_map") {
+    const sel = document.getElementById("autoMap");
+    const name = sel && sel.value;
+    if (!name) { log("请先选一张合格图"); return; }
+    sendCmd("autonav_select_map", {name: name, mapId: name});
+    return;
+  }
+  if (act === "autonav_goto") {
+    const an = (lastState && lastState.autonav) || {};
+    const frameSel = document.getElementById("autoFrame");
+    const frame = (frameSel && frameSel.value) || "odom";
+    if (frame === "map" && !an.locReady) {
+      log("地图系未 locReady，已拒绝前往。" + (an.hint || ""));
+      setAutoBar("bad", "未定位", an.hint || "先选合格图、SSH 开定位、等 TF 锁定。或改回出发系。");
+      return;
+    }
+    const x = num("ax"), y = num("ay");
+    if (x == null || y == null) { log("autonav_goto 需要坐标 x / y"); return; }
+    const extra = {x:x, y:y, frame: frame};
+    const s = num("as");
+    if (s != null) extra.speed = s;
+    const yaw = num("ayaw");
+    if (yaw != null) extra.yawDeg = yaw;
+    if (frame === "map" && an.mapId) extra.name = an.mapId;
+    sendCmd("autonav_goto", extra);
+    setAutoBar("run", "已下发", startFrameLabel(frame) + "目标 (" + x.toFixed(2) + ", " + y.toFixed(2) + ")");
+    return;
+  }
+  if (act === "autonav_cancel") {
+    sendCmd("autonav_cancel", {});
+    return;
+  }
+  if (act === "autonav_map") {
+    sendCmd("autonav_map", {}, true);
+    return;
+  }
+  if (act === "set_wheelbase") {
+    const wb = num("wbSet");
+    if (wb == null || wb <= 0) { log("轮距需要大于 0 的米数"); return; }
+    sendCmd("set_wheelbase", {wheelbaseM: wb});
+    return;
+  }
+  if (act === "calibrate_wheelbase") {
+    const yaw = num("wbYaw");
+    if (yaw == null) { log("标定需要地面实测航向（相对重置原点）"); return; }
+    sendCmd("calibrate_wheelbase", {yawDeg: yaw});
     return;
   }
   if (act === "move") {
@@ -677,11 +929,23 @@ function handleAct(act) {
     sendCmd("map_upload", {file: file});
     return;
   }
-  if (act === "view_both" || act === "view_off" || act === "point_cloud" || act === "lidar_map") {
-    send({t:"view", mode: act === "point_cloud" ? "cloud" : act === "lidar_map" ? "map" : act === "view_both" ? "both" : "off"});
-    if (act === "point_cloud" || act === "lidar_map") sendCmd(act === "lidar_map" ? "lidar_map" : "point_cloud", {});
-    else if (act === "view_both") sendCmd("point_cloud", {});
-    log(act === "view_off" ? "关闭工控机雷达窗口" : "打开工控机雷达窗口");
+  if (act === "lidar_refresh") {
+    requestLidarVisuals(true);
+    log("刷新雷达画面");
+    return;
+  }
+  if (act === "slam_maps") { send({t:"slam_maps"}); return; }
+  if (act === "lidar_map") {
+    sendCmd("lidar_map", {includeFree: true});
+    return;
+  }
+  if (act === "point_cloud") {
+    sendCmd("point_cloud", {});
+    return;
+  }
+  if (act === "view_both" || act === "view_off") {
+    send({t:"view", mode: act === "view_both" ? "both" : "off"});
+    log(act === "view_off" ? "关闭工控机雷达窗口" : "请求工控机桌面窗");
     return;
   }
   sendCmd(act, {});
@@ -696,8 +960,16 @@ function renderTracks(items) {
   items.forEach((it) => {
     const b = document.createElement("button");
     b.type = "button";
-    b.textContent = it.name + "  ·  " + Number(it.duration || 0).toFixed(1) + "s  ·  " + (it.waypoints || 0) + " 航点";
+    const src = it.odometerSource || "unknown";
+    const odo = it.hasOdo ? "有轮程" : "无 0x311";
+    let tag = "可回原点";
+    if (!it.returnOk) tag = it.hasOdo ? "勿作回原点" : "不能回原点";
+    if (it.dockOk) tag += " · 可精停";
+    else if (it.returnOk) tag += " · 无起点位姿";
+    b.textContent = it.name + "  ·  " + Number(it.duration || 0).toFixed(1) + "s  ·  "
+      + (it.waypoints || 0) + " 航点  ·  " + src + "  ·  " + odo + "  ·  " + tag;
     if (it.name === selectedTrack) b.classList.add("sel");
+    if (!it.returnOk) b.classList.add(it.hasOdo ? "warn" : "bad");
     b.addEventListener("click", () => {
       selectedTrack = it.name;
       document.getElementById("trName").value = it.name;
@@ -705,6 +977,23 @@ function renderTracks(items) {
     });
     box.appendChild(b);
   });
+}
+function renderLastReplay(p) {
+  const el = document.getElementById("trackHealth");
+  if (!el) return;
+  const r = p && p.lastReplay;
+  if (!r) return;
+  const bits = [
+    r.direction === "reverse" ? "倒放" : "正放",
+    r.complete ? "完整覆盖" : "未完整",
+    r.hadOdo ? "里程驱动" : "无可靠里程",
+    r.timeFallback ? "时间轴兜底" : null,
+    (r.stalledWps ? ("未覆盖 " + r.stalledWps + " 航点") : null),
+    (r.docked ? "已精停" : null),
+    (r.dockErrM != null ? ("距起点 " + Number(r.dockErrM).toFixed(2) + " m") : null),
+    (r.dockErrYawDeg != null ? ("航向差 " + Number(r.dockErrYawDeg).toFixed(0) + "°") : null)
+  ].filter(Boolean);
+  el.textContent = "上次回放：" + bits.join(" · ") + "。完整 + 已精停才算压在起点上。";
 }
 function batText(p) {
   const bms = (p.chassis || {}).bms;
@@ -745,6 +1034,8 @@ function renderChassis(p) {
   const bms = ch.bms || {};
   const rc = ch.remote || {};
   const can = p.can || {};
+  const loc = p.localization || {};
+  const last = p.lastGoto || {};
   const pt = powerTone(p);
   const faults = (sys.faults && sys.faults.length) ? sys.faults.join("；") : "无";
   box.innerHTML = [
@@ -775,6 +1066,13 @@ function renderChassis(p) {
       ["融合来源", odo.source || "—"],
       ["平均里程", p.odometer != null ? Number(p.odometer).toFixed(3) + " m" : "—"]
     ]),
+    kv("定位 / 轮距", [
+      ["位姿来源", loc.source || "—"],
+      ["轮距", loc.wheelbaseM != null ? Number(loc.wheelbaseM).toFixed(3) + " m" : "—"],
+      ["上次 goto 残差", last.errM != null
+        ? Number(last.errM).toFixed(3) + " m / " + Number(last.errYawDeg || 0).toFixed(1) + "°"
+        : "—"]
+    ]),
     kv("CAN / 遥控", [
       ["通道", (can.interface || "") + " " + (can.channel || "—")],
       ["链路", can.link || "—", can.feedback ? "ok" : "bad"],
@@ -803,16 +1101,26 @@ function chassisClose() {
 }
 function applyState(p) {
   if (!p || typeof p !== "object") return;
+  const wasOn = !!(lastState && lastState.lidar && lastState.lidar.online);
   lastState = p;
   const pose = p.pose || {};
+  const loc = p.localization || {};
+  const locSrc = loc.source || "";
+  const locTxt = locSrc ? " · " + locSrc : "";
   document.getElementById("mPose").textContent =
     (pose.x == null ? "—" : Number(pose.x).toFixed(2) + ", " + Number(pose.y).toFixed(2));
-  document.getElementById("mYaw").textContent = "yaw " + (pose.yaw == null ? "—" : Number(pose.yaw).toFixed(1) + "°");
+  document.getElementById("mYaw").textContent = "yaw " + (pose.yaw == null ? "—" : Number(pose.yaw).toFixed(1) + "°")
+    + locTxt;
   document.getElementById("mSpeed").textContent = (p.speed == null ? "—" : Number(p.speed).toFixed(2) + " m/s");
   document.getElementById("mMode").textContent = (p.mode || "mode —") + (p.vehicleState ? " · " + p.vehicleState : "");
   const lidar = p.lidar || {};
   document.getElementById("mLidar").textContent = lidar.online ? "在线" : "离线";
-  document.getElementById("mFront").textContent = "前方 " + (lidar.frontObstacle == null ? "—" : lidar.frontObstacle + " m");
+  const src = lidar.source === "ros" ? "ROS /rslidar_points"
+    : lidar.source === "pcap" ? "PCAP"
+    : lidar.source === "udp" ? "UDP 6699"
+    : (lidar.online || lidar.source ? String(lidar.source || "") : "");
+  const front = "前方 " + (lidar.frontObstacle == null ? "—" : lidar.frontObstacle + " m");
+  document.getElementById("mFront").textContent = src ? src + " · " + front : front;
   const mission = p.mission || {};
   const st = mission.status || "";
   document.getElementById("mMission").textContent = MISSION_CN[st] || st || "空闲";
@@ -822,16 +1130,28 @@ function applyState(p) {
   batEl.className = "v " + toneClass(powerTone(p));
   const can = p.can || {};
   document.getElementById("mCan").textContent = (can.channel || "can?") + " · " + (can.link || "—") + (can.feedback ? " · 有反馈" : " · 无反馈");
-  if (currentPage() === "chassis") renderChassis(p);
-  applyDrive(p);
-  drawPose(p);
-  refreshPreviews();
+  try {
+    if (currentPage() === "chassis") renderChassis(p);
+    applyDrive(p);
+    drawPose(p);
+    if (p.lidar) renderLidarStatus(lastLidarStatus, p);
+    if (!wasOn && p.lidar && p.lidar.online && currentPage() === "lidar") {
+      requestLidarVisuals(false);
+    }
+    refreshPreviews();
+    renderLastReplay(p);
+    renderWbHint(p);
+    renderAutonav(p);
+  } catch (e) {}
 }
 function setDriveBar(tone, kind, detail) {
   const bar = document.getElementById("driveBar");
+  if (!bar) return;
   bar.className = "drive-bar " + (tone || "idle");
-  document.getElementById("driveKind").textContent = kind;
-  document.getElementById("driveDetail").textContent = detail;
+  const k = document.getElementById("driveKind");
+  const d = document.getElementById("driveDetail");
+  if (k) k.textContent = kind;
+  if (d) d.textContent = detail;
 }
 function applyDrive(p) {
   const d = (p && p.drive) || {};
@@ -840,7 +1160,10 @@ function applyDrive(p) {
   const lidarReady = d.lidarReady;
   const lidarOn = d.lidarEnabled;
   const btn = document.getElementById("btnGoto");
-  if (btn) btn.disabled = lidarOn && !lidarReady;
+  if (btn) {
+    btn.disabled = (lidarOn && !lidarReady) || kind === "autonav";
+    btn.textContent = kind === "goto" ? "改目标 goto" : "导航 goto";
+  }
   if (kind === "move" && d.move) {
     const m = d.move;
     const remain = m.remainS == null ? "—" : Number(m.remainS).toFixed(1) + "s";
@@ -850,14 +1173,33 @@ function applyDrive(p) {
       "。按 WASD 会接管并取消。");
     return;
   }
+  if (kind === "autonav") {
+    const g = d.goto || {};
+    const target = (g.mapX == null || g.mapY == null)
+      ? ((g.x == null || g.y == null) ? "目标已下发" : "目标 (" + Number(g.x).toFixed(2) + ", " + Number(g.y).toFixed(2) + ")")
+      : "地图目标 (" + Number(g.mapX).toFixed(2) + ", " + Number(g.mapY).toFixed(2) + ")";
+    const pathN = Array.isArray(g.path) ? g.path.length : 0;
+    const msg = target + (g.distM == null ? "" : "  剩余 " + Number(g.distM).toFixed(2) + " m") +
+      (g.errYawDeg == null ? "" : "  航向差 " + Number(g.errYawDeg).toFixed(1) + "°") +
+      (pathN > 2 ? "  · " + (pathN - 1) + " 段规划" : "  · 直线") +
+      "。任务页 goto / 探路 / 回放已拒绝。WASD 会接管并取消。";
+    setDriveBar("run", "自动导航执行中", msg);
+    setAutoBar("run", "行驶中", msg);
+    const ab = document.getElementById("btnAutonav");
+    if (ab) { ab.disabled = false; ab.textContent = "改目标"; }
+    return;
+  }
   if (kind === "goto") {
     const g = d.goto || {};
     const target = (g.x == null || g.y == null)
       ? "目标已下发"
       : "目标 (" + Number(g.x).toFixed(2) + ", " + Number(g.y).toFixed(2) + ")";
+    const pathN = Array.isArray(g.path) ? g.path.length : 0;
     setDriveBar("run", "导航 goto 执行中",
       target + (g.distM == null ? "" : "  剩余 " + Number(g.distM).toFixed(2) + " m") +
-      "。按 WASD 会接管并取消。");
+      (g.errYawDeg == null ? "" : "  航向差 " + Number(g.errYawDeg).toFixed(1) + "°") +
+      (pathN > 2 ? "  · " + (pathN - 1) + " 段规划" : "  · 直线") +
+      "。再点一次会改目标。WASD 会接管并取消。");
     return;
   }
   if (kind === "mission" || kind === "replay") {
@@ -870,6 +1212,355 @@ function applyDrive(p) {
     return;
   }
   setDriveBar("idle", "空闲", "没有正在执行的 move / goto。");
+}
+function setAutoBar(tone, kind, detail) {
+  const bar = document.getElementById("autoBar");
+  if (!bar) return;
+  bar.className = "drive-bar " + (tone || "idle");
+  const k = document.getElementById("autoKind");
+  const d = document.getElementById("autoDetail");
+  if (k) k.textContent = kind;
+  if (d) d.textContent = detail;
+}
+function pipeStep(n, title, detail, cls) {
+  return "<div class=\"step " + cls + "\"><div class=\"n\">" + n + "</div><div><div class=\"t\">" + title + "</div><div class=\"d\">" + (detail || "") + "</div></div></div>";
+}
+function autoFrame() {
+  const sel = document.getElementById("autoFrame");
+  return (sel && sel.value) || "odom";
+}
+function isMapFrame(f) { return (f || autoFrame()) === "map"; }
+function isSketchFrame(f) { return (f || autoFrame()) === "sketch"; }
+function startFrameLabel(f) {
+  const x = f || autoFrame();
+  if (x === "map") return "地图";
+  if (x === "sketch") return "现场图";
+  return "出发系";
+}
+function autoLayerPts(layer, frame) {
+  const occ = isMapFrame(frame) ? asXY(layer.occupied)
+    : (isSketchFrame(frame) ? asXY(layer.odomOccupied) : []);
+  const blocked = isSketchFrame(frame) ? asXY(layer.odomBlocked) : [];
+  const free = isSketchFrame(frame) ? asXY(layer.odomFree) : [];
+  const cloud = isSketchFrame(frame) ? asXY(layer.cloudXY) : [];
+  const sketch = isSketchFrame(frame) ? [] : asXY(layer.sketchOccupied);
+  return {occ, blocked, free, cloud, sketch};
+}
+function renderAutonav(p) {
+  const an = (p && p.autonav) || {};
+  const stage = an.stage || "no_map";
+  const mapId = an.mapId || "";
+  const maps = Array.isArray(an.maps) ? an.maps : [];
+  const sel = document.getElementById("autoMap");
+  if (sel) {
+    const cur = sel.value;
+    const opts = maps.length ? maps : [{id:"", usable:"not_qualified", notes:"还没有名单"}];
+    sel.innerHTML = opts.map((m) => {
+      const id = m.id || "";
+      if (!id) return "<option value=\"\">（空）</option>";
+      let label = id;
+      if (m.banned || m.usable === "not_for_loc") label += " · 不可定位";
+      else if (m.qualified || m.usable === "qualified") label += " · 合格";
+      else label += " · 未验收";
+      const dis = (m.banned || m.usable === "not_for_loc" || !(m.qualified || m.usable === "qualified")) ? " disabled" : "";
+      return "<option value=\"" + id + "\"" + dis + ">" + label + "</option>";
+    }).join("");
+    const want = mapId || cur;
+    if (want && Array.from(sel.options).some((o) => o.value === want && !o.disabled)) sel.value = want;
+  }
+  const frame = autoFrame();
+  const qok = !!(mapId && maps.some((m) => m.id === mapId && (m.qualified || m.usable === "qualified")));
+  const locOn = !!an.locOnline;
+  const ext = an.poseSource === "external";
+  const lidarOn = !!an.lidarReceiving;
+  const driving = stage === "navigating";
+  const startOk = an.startReady !== false;
+  const axLab = document.getElementById("axLab");
+  const ayLab = document.getElementById("ayLab");
+  if (axLab) axLab.textContent = frame === "map" ? "地图 x (m)" : "出发 x (m)";
+  if (ayLab) ayLab.textContent = frame === "map" ? "地图 y (m)" : "出发 y (m)";
+  const hint = document.getElementById("autoHint");
+  if (hint) {
+    hint.textContent = (
+      frame === "sketch" ? (an.sketchHint || an.startHint || an.hint)
+      : (frame === "odom" ? (an.startHint || an.hint) : an.hint)
+    ) || "";
+  }
+  const ssh = document.getElementById("autoSsh");
+  if (ssh) ssh.textContent = frame === "map"
+    ? ("SSH 定位：" + (an.sshLoc || "maps/start_mola_localization.sh <mapId>") + "。初始位姿用 RViz「2D Pose Estimate」。网页不 launch。")
+    : (frame === "sketch"
+      ? ("现场图不 launch MOLA。坐标仍是出发系。格子会过期。近场刹车看 /rslidar_points（现在：" + (lidarOn ? "在线" : "未到") + "）。")
+      : ("出发系不 launch MOLA。近场刹车看 /rslidar_points 是否在线（现在：" + (lidarOn ? "在线" : "未到") + "）。"));
+  const pipe = document.getElementById("autoPipe");
+  if (pipe) {
+    if (frame === "odom") {
+      pipe.innerHTML = [
+        pipeStep(1, "出发原点", startOk ? "里程系已就绪（启动或重置原点）" : "导航器未就绪", startOk ? "ok" : "wait"),
+        pipeStep(2, "近场点云", lidarOn ? "订 /rslidar_points，前往会限速/停车" : "未到。仍可开环前往，无近场刹车。", lidarOn ? "ok" : "wait"),
+        pipeStep(3, "相对坐标", "填管道入口相对出发位置的 (x, y)。x 向前，y 向左。", "ok"),
+        pipeStep(4, "点前往", "不需要合格图。任务页 goto 会互斥。", startOk ? "ok" : "wait"),
+        pipeStep(5, "行驶中", driving ? "出发系占用自主通道" : "未行驶", driving ? "ok" : "wait")
+      ].join("");
+    } else if (frame === "sketch") {
+      pipe.innerHTML = [
+        pipeStep(1, "出发原点", startOk ? "坐标仍是启动或重置原点" : "导航器未就绪", startOk ? "ok" : "wait"),
+        pipeStep(2, "近场点云", lidarOn ? "占用格会画在画布上" : "未到。画布可能是空的，仍可按坐标开环前往。", lidarOn ? "ok" : "wait"),
+        pipeStep(3, "现场格子", "格子会过期，不是建图。可点画布填目标。", lidarOn ? "ok" : "wait"),
+        pipeStep(4, "点前往", "不需要合格图。有格子时会尽量绕开已知障碍。", startOk ? "ok" : "wait"),
+        pipeStep(5, "行驶中", driving ? "现场图占用自主通道" : "未行驶", driving ? "ok" : "wait")
+      ].join("");
+    } else {
+      pipe.innerHTML = [
+        pipeStep(1, "有合格图", qok ? ("已选 " + mapId) : "lab/lab2 不可选。把验收过的前缀写入 maps/qualified.json。", qok ? "ok" : "bad"),
+        pipeStep(2, "定位进程在线", locOn ? "TF 树里有 map 帧" : "未检测到 map TF。去工控机跑定位脚本。", locOn ? "ok" : (qok ? "wait" : "wait")),
+        pipeStep(3, "跟踪已锁定", ext ? "pose_source = external" : "还是纯 odom / 未锁定。RViz 给初始位姿。", ext ? "ok" : "wait"),
+        pipeStep(4, "点目标", "在 2D 层点选或填地图坐标 (x, y)。", (qok && ext) ? "ok" : "wait"),
+        pipeStep(5, "行驶中", driving ? "自动导航占用自主通道" : "未行驶", driving ? "ok" : "wait")
+      ].join("");
+    }
+  }
+  const btn = document.getElementById("btnAutonav");
+  if (btn) {
+    const ready = frame === "map" ? !!an.locReady : startOk;
+    btn.disabled = !ready;
+    btn.textContent = driving ? "改目标" : "前往";
+  }
+  if (!driving) {
+    if (frame === "map" && !an.locReady) setAutoBar("warn", "未定位", an.hint || "地图系未 locReady，「前往」会拒绝。可改回出发系或现场图。");
+    else if (frame === "sketch") setAutoBar("idle", lidarOn ? "现场图就绪" : "现场图开环", an.sketchHint || "可以点画布或填相对原点的目标。");
+    else if (frame === "odom") setAutoBar("idle", lidarOn ? "出发系就绪" : "出发系开环", an.startHint || "可以下发相对原点的目标。");
+    else setAutoBar("idle", "就绪", "可以下发地图系目标。");
+  }
+  const ap = document.getElementById("autoPreview");
+  if (ap) {
+    const x = num("ax"), y = num("ay");
+    const pose = frame === "map" ? (an.pose || {}) : (an.odomPose || {});
+    if (x == null || y == null) ap.textContent = frame === "map" ? "填写地图坐标，或点上面的 2D 层。" : (frame === "sketch" ? "点画布上的占用格，或填相对出发原点的 x / y。" : "填写相对出发原点的 x / y。");
+    else if (pose.x != null) {
+      const dist = Math.hypot(x - Number(pose.x), y - Number(pose.y));
+      ap.textContent = startFrameLabel(frame) + "目标距当前约 " + dist.toFixed(2) + " m";
+    } else ap.textContent = "目标 (" + x.toFixed(2) + ", " + y.toFixed(2) + ")";
+  }
+  if (currentPage() === "autonav") drawAuto();
+}
+function vehicleCorners(px, py, yaw, lengthM, widthM) {
+  const hl = lengthM / 2, hw = widthM / 2;
+  const c = Math.cos(yaw), s = Math.sin(yaw);
+  return [[hl, hw], [hl, -hw], [-hl, hw], [-hl, -hw]].map(([lx, ly]) => [
+    px + lx * c - ly * s,
+    py + lx * s + ly * c
+  ]);
+}
+function drawMeterGrid(ctx, toXY, span, W, H) {
+  const step = span > 10 ? 2 : 1;
+  const origin = toXY(0, 0);
+  const reach = span;
+  ctx.save();
+  ctx.strokeStyle = "rgba(255,255,255,0.06)";
+  ctx.lineWidth = 1;
+  for (let m = -Math.ceil(reach); m <= Math.ceil(reach); m += step) {
+    const v = toXY(m, 0);
+    ctx.beginPath(); ctx.moveTo(v[0], 8); ctx.lineTo(v[0], H - 8); ctx.stroke();
+    const h = toXY(0, m);
+    ctx.beginPath(); ctx.moveTo(8, h[1]); ctx.lineTo(W - 8, h[1]); ctx.stroke();
+  }
+  ctx.strokeStyle = "rgba(240,193,75,0.35)";
+  ctx.beginPath(); ctx.moveTo(origin[0], 8); ctx.lineTo(origin[0], H - 8); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(8, origin[1]); ctx.lineTo(W - 8, origin[1]); ctx.stroke();
+  ctx.restore();
+}
+function drawVehicleFootprint(ctx, toXY, px, py, yaw, lengthM, widthM, span, W) {
+  const s = (W - 28) / span;
+  const r = toXY(px, py);
+  ctx.save();
+  ctx.translate(r[0], r[1]);
+  ctx.rotate(-yaw);
+  ctx.fillStyle = "rgba(94,200,255,0.16)";
+  ctx.strokeStyle = "#5ec8ff";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.rect(-lengthM / 2 * s, -widthM / 2 * s, lengthM * s, widthM * s);
+  ctx.fill();
+  ctx.stroke();
+  ctx.strokeStyle = "#ffb020";
+  ctx.fillStyle = "#ffb020";
+  ctx.lineWidth = 3;
+  const nose = lengthM / 2 * s;
+  ctx.beginPath();
+  ctx.moveTo(0, 0);
+  ctx.lineTo(nose + 16, 0);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(nose + 20, 0);
+  ctx.lineTo(nose + 6, 8);
+  ctx.lineTo(nose + 6, -8);
+  ctx.closePath();
+  ctx.fill();
+  ctx.fillStyle = "#ffd37a";
+  ctx.font = "11px sans-serif";
+  ctx.fillText("车头", nose + 22, -10);
+  ctx.restore();
+}
+function autoCamReset() {
+  autoCam.zoom = 1;
+  autoCam.cx = null;
+  autoCam.cy = null;
+  autoCam.user = false;
+  autoZoomPaintLbl();
+}
+function autoZoomPaintLbl() {
+  const el = document.getElementById("autoZoomLbl");
+  if (el) el.textContent = Math.round((autoCam.zoom || 1) * 100) + "%";
+}
+function autoContentPts() {
+  const layer = lastAutoMap || {};
+  const an = (lastState && lastState.autonav) || {};
+  const frame = autoFrame();
+  const {occ, blocked, free, cloud, sketch} = autoLayerPts(layer, frame);
+  const pose = frame === "map" ? (an.pose || {}) : (an.odomPose || {});
+  const px = Number(pose.x), py = Number(pose.y);
+  const yaw = Number(pose.yawDeg || 0) * Math.PI / 180;
+  const gx = num("ax"), gy = num("ay");
+  const drive = (lastState && lastState.drive) || {};
+  const goal = drive.goto || {};
+  const gmx = goal.mapX != null ? Number(goal.mapX) : gx;
+  const gmy = goal.mapY != null ? Number(goal.mapY) : gy;
+  const veh = (layer.vehicle || an.vehicle || {});
+  const vL = Number(veh.lengthM) > 0 ? Number(veh.lengthM) : 0.69;
+  const vW = Number(veh.widthM) > 0 ? Number(veh.widthM) : 0.57;
+  const pts = occ.concat(blocked).concat(free).concat(cloud).concat(sketch);
+  if (Number.isFinite(px) && Number.isFinite(py)) {
+    pts.push([px, py]);
+    vehicleCorners(px, py, yaw, vL, vW).forEach((xy) => pts.push(xy));
+  }
+  if (gmx != null && gmy != null && Number.isFinite(gmx) && Number.isFinite(gmy)) pts.push([gmx, gmy]);
+  return {
+    layer, an, frame, occ, blocked, free, cloud, sketch, pose, px, py, yaw,
+    gx, gy, gmx, gmy, vL, vW, pts, goal, sketchView: isSketchFrame(frame)
+  };
+}
+function autoView(W, H) {
+  const scene = autoContentPts();
+  const pts = scene.pts.length ? scene.pts : [[0, 0], [1, 0], [0, 1]];
+  const fit = worldScale(pts, W, H, scene.sketchView ? 0.8 : 1.2, scene.sketchView ? 4.0 : 2.4);
+  const zoom = Math.max(AUTO_ZOOM_MIN, Math.min(AUTO_ZOOM_MAX, autoCam.zoom || 1));
+  const span = fit.span / zoom;
+  const cx = autoCam.user && autoCam.cx != null ? autoCam.cx : fit.cx;
+  const cy = autoCam.user && autoCam.cy != null ? autoCam.cy : fit.cy;
+  const toXY = (x, y) => [
+    W / 2 + (x - cx) / span * (W - 28),
+    H / 2 - (y - cy) / span * (H - 28)
+  ];
+  const fromXY = (sx, sy) => ({
+    x: cx + (sx - W / 2) / (W - 28) * span,
+    y: cy - (sy - H / 2) / (H - 28) * span
+  });
+  return { toXY, fromXY, span, cx, cy, zoom, fit, scene };
+}
+function autoZoomBy(factor, sx, sy) {
+  const c = document.getElementById("autoCanvas");
+  if (!c) return;
+  const W = c.width, H = c.height;
+  const view = autoView(W, H);
+  const px = (sx != null && sy != null) ? sx : W / 2;
+  const py = (sx != null && sy != null) ? sy : H / 2;
+  const old = view.fromXY(px, py);
+  autoCam.zoom = Math.max(AUTO_ZOOM_MIN, Math.min(AUTO_ZOOM_MAX, view.zoom * factor));
+  autoCam.user = true;
+  if (autoCam.cx == null) { autoCam.cx = view.cx; autoCam.cy = view.cy; }
+  const next = autoView(W, H);
+  const now = next.fromXY(px, py);
+  autoCam.cx = next.cx + (old.x - now.x);
+  autoCam.cy = next.cy + (old.y - now.y);
+  autoZoomPaintLbl();
+  drawAuto();
+}
+function autoCanvasLocal(ev, canvas) {
+  const c = canvas || document.getElementById("autoCanvas");
+  const rect = c.getBoundingClientRect();
+  return {
+    sx: (ev.clientX - rect.left) * (c.width / rect.width),
+    sy: (ev.clientY - rect.top) * (c.height / rect.height),
+    rect
+  };
+}
+function drawAuto() {
+  const c = document.getElementById("autoCanvas");
+  if (!c) return;
+  const ctx = c.getContext("2d");
+  const W = c.width, H = c.height;
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = "#8b9aab";
+  ctx.font = "12px sans-serif";
+  const view = autoView(W, H);
+  const {layer, frame, occ, blocked, free, cloud, sketch, px, py, yaw, gmx, gmy, vL, vW, pts, goal, sketchView} = view.scene;
+  const zoomHud = () => {
+    ctx.fillStyle = "#8b9aab";
+    ctx.fillText(Math.round(view.zoom * 100) + "%", W - 52, 20);
+  };
+  if (!pts.length) {
+    ctx.fillText(frame === "map"
+      ? (layer.ready === false ? (layer.hint || "没有 2D 点击层，请填数字坐标") : "等待定位或 2D 层")
+      : (sketchView ? "填写出发系坐标。点云到了会画出周围障碍。" : "填写出发系坐标，或等占用格"), 16, 24);
+    zoomHud();
+    return;
+  }
+  const {toXY, span} = view;
+  if (sketchView) drawMeterGrid(ctx, toXY, span, W, H);
+  const res = Number(layer.resolution) > 0 ? Number(layer.resolution) : 0.1;
+  const cellPx = Math.max(2.2, (W - 28) / span * res);
+  ctx.fillStyle = "rgba(70, 110, 90, 0.35)";
+  free.forEach(([x,y]) => { const q = toXY(x,y); ctx.fillRect(q[0]-cellPx/2, q[1]-cellPx/2, cellPx, cellPx); });
+  ctx.fillStyle = "#3a4654";
+  sketch.forEach(([x,y]) => { const q = toXY(x,y); ctx.fillRect(q[0]-1, q[1]-1, 2, 2); });
+  ctx.fillStyle = "#cfd6de";
+  occ.forEach(([x,y]) => { const q = toXY(x,y); ctx.fillRect(q[0]-cellPx/2, q[1]-cellPx/2, cellPx, cellPx); });
+  ctx.fillStyle = "#8b1e2d";
+  blocked.forEach(([x,y]) => { const q = toXY(x,y); ctx.fillRect(q[0]-cellPx/2, q[1]-cellPx/2, cellPx, cellPx); });
+  ctx.fillStyle = "rgba(122,162,255,0.85)";
+  cloud.forEach(([x,y]) => { const q = toXY(x,y); ctx.fillRect(q[0]-1.2, q[1]-1.2, 2.4, 2.4); });
+  const path = Array.isArray(goal.path) ? goal.path : [];
+  if (path.length >= 2) {
+    ctx.strokeStyle = "#e8b84a";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    path.forEach((xy, i) => {
+      const q = toXY(xy[0], xy[1]);
+      if (i === 0) ctx.moveTo(q[0], q[1]);
+      else ctx.lineTo(q[0], q[1]);
+    });
+    ctx.stroke();
+  }
+  if (gmx != null && gmy != null && Number.isFinite(gmx) && Number.isFinite(gmy)) {
+    const g = toXY(gmx, gmy);
+    ctx.fillStyle = "#3dd68c";
+    ctx.beginPath(); ctx.arc(g[0], g[1], 5, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = "#8b9aab";
+    ctx.fillText("(" + Number(gmx).toFixed(1) + "," + Number(gmy).toFixed(1) + ")", g[0] + 7, g[1] + 4);
+  }
+  if (Number.isFinite(px) && Number.isFinite(py)) {
+    drawVehicleFootprint(ctx, toXY, px, py, yaw, vL, vW, span, W);
+  }
+  const nOcc = occ.length + blocked.length;
+  const nCloud = cloud.length;
+  ctx.fillStyle = "#8b9aab";
+  if (sketchView) {
+    ctx.fillText(
+      (layer.lidarReceiving ? "点云在线" : "点云未到") +
+      " · 占用 " + nOcc + " · 点 " + nCloud +
+      " · 碰撞框 " + vL.toFixed(2) + "×" + vW.toFixed(2) + " m",
+      16, H - 14
+    );
+  } else if (layer.ready === false && layer.hint) {
+    ctx.fillText(layer.hint, 16, H - 14);
+  }
+  zoomHud();
+}
+function autoCanvasWorld(sx, sy) {
+  const c = document.getElementById("autoCanvas");
+  const W = c.width, H = c.height;
+  return autoView(W, H).fromXY(sx, sy);
 }
 function tickDrive() {
   const d = (lastState && lastState.drive) || {};
@@ -898,16 +1589,52 @@ function refreshPreviews() {
   }
   const gx = num("gx"), gy = num("gy");
   const gp = document.getElementById("gotoPreview");
+  const yaw = num("gyaw");
+  const spd = num("gs");
   if (gx == null || gy == null) {
     gp.textContent = "填写世界坐标 x / y。先看左边图上的绿点。";
   } else if (hasPose) {
     const dist = Math.hypot(gx - px, gy - py);
     gp.textContent = "从当前位置 (" + px.toFixed(2) + ", " + py.toFixed(2) +
       ") 到 (" + gx.toFixed(2) + ", " + gy.toFixed(2) + ")，直线 " +
-      dist.toFixed(2) + " m。雷达必须在线。";
+      dist.toFixed(2) + " m" +
+      (spd != null ? " · ≤" + spd.toFixed(2) + " m/s" : "") +
+      (yaw != null ? " · 终点航向 " + yaw.toFixed(0) + "°" : "") +
+      "。雷达必须在线。正在导航时再点会改目标。";
   } else {
     gp.textContent = "目标 (" + gx.toFixed(2) + ", " + gy.toFixed(2) + ")。等工控机位姿后再算距离。";
   }
+}
+function gotoPath(p) {
+  const g = ((p && p.drive) || {}).goto || {};
+  const raw = g.path;
+  if (!Array.isArray(raw) || raw.length < 2) return [];
+  return raw.map((xy) => [Number(xy[0]), Number(xy[1])]).filter(
+    (xy) => Number.isFinite(xy[0]) && Number.isFinite(xy[1])
+  );
+}
+function renderWbHint(p) {
+  const el = document.getElementById("wbHint");
+  if (!el) return;
+  const loc = (p && p.localization) || {};
+  const last = (p && p.lastGoto) || {};
+  const bits = [];
+  if (loc.wheelbaseM != null) bits.push("轮距 " + Number(loc.wheelbaseM).toFixed(3) + " m");
+  if (loc.source) bits.push("位姿 " + loc.source);
+  if (loc.lastCorrection) {
+    const c = loc.lastCorrection;
+    bits.push("最近扫描匹配 Δ" + Number(c.dx || 0).toFixed(2) + "," + Number(c.dy || 0).toFixed(2) + " m");
+  }
+  if (last.errM != null) {
+    bits.push(
+      "上次 goto 残差 " + Number(last.errM).toFixed(3) + " m" +
+      (last.errYawDeg != null ? " / " + Number(last.errYawDeg).toFixed(1) + "°" : "") +
+      "（里程系，不是卷尺）"
+    );
+  }
+  el.textContent = bits.length
+    ? bits.join(" · ") + "。标定：重置原点 → 原地转到已知角 → 填实测航向。"
+    : "还没有轮距/残差。开雷达后看状态栏 yaw 旁的定位来源。";
 }
 function drawPose(p) {
   const c = document.getElementById("poseCanvas");
@@ -921,8 +1648,18 @@ function drawPose(p) {
   const drive = (p && p.drive) || {};
   const gx = drive.goto ? Number(drive.goto.x) : num("gx");
   const gy = drive.goto ? Number(drive.goto.y) : num("gy");
+  const path = gotoPath(p);
   const pts = [[0,0],[px,py]];
   if (gx != null && gy != null) pts.push([gx, gy]);
+  path.forEach((xy) => pts.push(xy));
+  if (lastOcc) {
+    ["occupied","blocked","free"].forEach((k) => {
+      asXY(lastOcc[k]).forEach((xy) => {
+        const x = Number(xy[0]), y = Number(xy[1]);
+        if (Number.isFinite(x) && Number.isFinite(y)) pts.push([x, y]);
+      });
+    });
+  }
   let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
   pts.forEach(([x,y]) => { minX=Math.min(minX,x); maxX=Math.max(maxX,x); minY=Math.min(minY,y); maxY=Math.max(maxY,y); });
   const pad = 1.2;
@@ -949,13 +1686,39 @@ function drawPose(p) {
   ctx.fillStyle = "#8b9aab";
   ctx.font = "11px ui-monospace, Menlo, sans-serif";
   ctx.fillText("原点", o[0] + 6, o[1] - 6);
+  if (lastOcc) {
+    const paint = (arr, color, r) => {
+      if (!arr) return;
+      ctx.fillStyle = color;
+      arr.forEach((xy) => {
+        const q = toXY(Number(xy[0]), Number(xy[1]));
+        ctx.fillRect(q[0] - r, q[1] - r, r * 2, r * 2);
+      });
+    };
+    paint(asXY(lastOcc.free), "rgba(207,214,222,.35)", 1.5);
+    paint(asXY(lastOcc.occupied), "#d8dee6", 2);
+    paint(asXY(lastOcc.blocked), "#ff4d5a", 2.5);
+  }
   if (gx != null && gy != null) {
     const g = toXY(gx, gy);
     const from = toXY(px, py);
-    ctx.strokeStyle = "#3dd68c";
-    ctx.setLineDash([4, 3]);
-    ctx.beginPath(); ctx.moveTo(from[0], from[1]); ctx.lineTo(g[0], g[1]); ctx.stroke();
-    ctx.setLineDash([]);
+    if (path.length >= 2) {
+      ctx.strokeStyle = "#e8b84a";
+      ctx.lineWidth = 2;
+      ctx.setLineDash([]);
+      ctx.beginPath();
+      path.forEach((xy, i) => {
+        const q = toXY(xy[0], xy[1]);
+        if (i === 0) ctx.moveTo(q[0], q[1]);
+        else ctx.lineTo(q[0], q[1]);
+      });
+      ctx.stroke();
+    } else {
+      ctx.strokeStyle = "#3dd68c";
+      ctx.setLineDash([4, 3]);
+      ctx.beginPath(); ctx.moveTo(from[0], from[1]); ctx.lineTo(g[0], g[1]); ctx.stroke();
+      ctx.setLineDash([]);
+    }
     ctx.fillStyle = "#3dd68c";
     ctx.beginPath(); ctx.arc(g[0], g[1], 5, 0, Math.PI*2); ctx.fill();
     ctx.fillText("(" + Number(gx).toFixed(1) + "," + Number(gy).toFixed(1) + ")", g[0] + 7, g[1] + 4);
@@ -970,6 +1733,197 @@ function drawPose(p) {
   ctx.fill();
   ctx.restore();
 }
+function asXY(arr) {
+  return Array.isArray(arr) ? arr : [];
+}
+function worldScale(pts, W, H, pad, minSpan) {
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  pts.forEach(([x,y]) => { minX=Math.min(minX,x); maxX=Math.max(maxX,x); minY=Math.min(minY,y); maxY=Math.max(maxY,y); });
+  minX -= pad; maxX += pad; minY -= pad; maxY += pad;
+  const span = Math.max(maxX - minX, maxY - minY, minSpan || 2.4);
+  const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
+  const toXY = (x, y) => [
+    W/2 + (x - cx) / span * (W - 28),
+    H/2 - (y - cy) / span * (H - 28)
+  ];
+  return {toXY, span, cx, cy};
+}
+function requestLidarVisuals(withFree) {
+  if (!ws || ws.readyState !== 1) return;
+  sendCmd("lidar_status", {}, true);
+  sendCmd("lidar_map", {includeFree: !!withFree}, true);
+  sendCmd("point_cloud", {}, true);
+}
+function renderLidarStatus(st, state) {
+  const lidar = (state && state.lidar) || {};
+  const src = (st && st.source) || lidar.source || "";
+  const online = st ? !!st.online : !!lidar.online;
+  const link = document.getElementById("lsLink");
+  if (!link) return;
+  const srcTxt = src === "ros" ? "ROS /rslidar_points" : src === "udp" ? "UDP 6699" : src === "pcap" ? "PCAP" : (src || "—");
+  link.textContent = (online ? "在线" : "离线") + " · " + srcTxt;
+  link.className = online ? "tone-ok" : "tone-bad";
+  const frames = st ? ((st.frames || 0) + " 帧 · " + (st.pointCount || 0) + " 点") : (lidar.frames != null ? lidar.frames + " 帧" : "—");
+  document.getElementById("lsFrames").textContent = frames;
+  const front = (st && st.front) || {};
+  const d = front.obstacleDistance != null ? front.obstacleDistance : lidar.frontObstacle;
+  const av = st && st.avoidanceTest;
+  let frontTxt = d == null ? "前方 —" : ("前方 " + Number(d).toFixed(2) + " m");
+  if (av) frontTxt += av.blocked ? " · 守卫拦截" : " · 守卫放行";
+  document.getElementById("lsFront").textContent = frontTxt;
+  document.getElementById("lsDiag").textContent = (st && st.diagnosis) || (online ? "雷达数据已进网页画布。建图请先关 Python 雷达再开 rslidar_sdk，然后可再开。" : "未在线：先点「雷达开」。若在建图，6699 被占时会自动订 /rslidar_points。");
+}
+function drawOcc() {
+  const c = document.getElementById("occCanvas");
+  if (!c) return;
+  const ctx = c.getContext("2d");
+  const W = c.width, H = c.height;
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = "#8b9aab";
+  ctx.font = "12px ui-monospace, Menlo, sans-serif";
+  if (!lastOcc && !(lastState && lastState.pose)) {
+    ctx.fillText("还没有占用格。点「雷达开」，再点「刷新画面」。", 16, 28);
+    return;
+  }
+  if (lastOcc && lastOcc.ready === false) {
+    ctx.fillText("占用格未就绪：先点「雷达开」。开机服务默认 --no-lidar。", 16, 28);
+    return;
+  }
+  const pose = (lastOcc && lastOcc.pose) || ((lastState && lastState.pose) || {});
+  const px = Number(pose.x) || 0, py = Number(pose.y) || 0;
+  const yaw = (Number(pose.yawDeg != null ? pose.yawDeg : pose.yaw) || 0) * Math.PI / 180;
+  const pts = [[0,0],[px,py]];
+  ["occupied","blocked","free"].forEach((k) => {
+    asXY(lastOcc && lastOcc[k]).forEach((xy) => pts.push([Number(xy[0]), Number(xy[1])]));
+  });
+  const gPath = gotoPath(lastState || {});
+  gPath.forEach((xy) => pts.push(xy));
+  const drive = (lastState && lastState.drive) || {};
+  if (drive.goto) {
+    pts.push([Number(drive.goto.x) || 0, Number(drive.goto.y) || 0]);
+  }
+  const {toXY} = worldScale(pts, W, H, 1.0);
+  const dot = (arr, color, r) => {
+    ctx.fillStyle = color;
+    asXY(arr).forEach((xy) => {
+      const q = toXY(Number(xy[0]), Number(xy[1]));
+      ctx.fillRect(q[0]-r, q[1]-r, r*2, r*2);
+    });
+  };
+  if (lastOcc) {
+    dot(lastOcc.free, "rgba(207,214,222,.28)", 1.6);
+    dot(lastOcc.occupied, "#e8eef5", 2.1);
+    dot(lastOcc.blocked, "#ff4d5a", 2.4);
+  }
+  const o = toXY(0, 0);
+  ctx.fillStyle = "#f0c14b";
+  ctx.beginPath(); ctx.arc(o[0], o[1], 4, 0, Math.PI*2); ctx.fill();
+  const r = toXY(px, py);
+  ctx.save();
+  ctx.translate(r[0], r[1]);
+  ctx.rotate(-yaw);
+  ctx.fillStyle = "#5ec8ff";
+  ctx.beginPath();
+  ctx.moveTo(12, 0); ctx.lineTo(-8, 7); ctx.lineTo(-8, -7); ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+  if (gPath.length >= 2) {
+    ctx.strokeStyle = "#e8b84a";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    gPath.forEach((xy, i) => {
+      const q = toXY(xy[0], xy[1]);
+      if (i === 0) ctx.moveTo(q[0], q[1]);
+      else ctx.lineTo(q[0], q[1]);
+    });
+    ctx.stroke();
+  }
+  if (drive.goto) {
+    const gg = toXY(Number(drive.goto.x) || 0, Number(drive.goto.y) || 0);
+    ctx.fillStyle = "#3dd68c";
+    ctx.beginPath(); ctx.arc(gg[0], gg[1], 5, 0, Math.PI*2); ctx.fill();
+  }
+  const nOcc = lastOcc ? (lastOcc.occupiedCells || (lastOcc.occupied||[]).length) : 0;
+  ctx.fillStyle = "#8b9aab";
+  ctx.fillText("障碍格 " + nOcc + (lastOcc && lastOcc.online === false ? " · 雷达离线" : ""), 12, H - 10);
+}
+function drawCloud() {
+  const c = document.getElementById("cloudCanvas");
+  if (!c) return;
+  const ctx = c.getContext("2d");
+  const W = c.width, H = c.height;
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = "#8b9aab";
+  ctx.font = "12px ui-monospace, Menlo, sans-serif";
+  const pts = (lastCloud && lastCloud.points) || [];
+  if (!pts.length) {
+    ctx.fillText("还没有当前帧。雷达在线后点「刷新画面」。", 16, 28);
+    return;
+  }
+  const xy = pts.map((p) => [Number(p[0]) || 0, Number(p[1]) || 0]);
+  const {toXY} = worldScale(xy.concat([[0,0],[0,1]]), W, H, 0.4);
+  ctx.fillStyle = "#5ec8ff";
+  xy.forEach((p) => {
+    const q = toXY(p[0], p[1]);
+    ctx.fillRect(q[0]-1, q[1]-1, 2, 2);
+  });
+  const origin = toXY(0, 0);
+  ctx.fillStyle = "#f0c14b";
+  ctx.beginPath(); ctx.arc(origin[0], origin[1], 4, 0, Math.PI*2); ctx.fill();
+  const nose = toXY(0, 0.6);
+  ctx.strokeStyle = "#5ec8ff";
+  ctx.beginPath(); ctx.moveTo(origin[0], origin[1]); ctx.lineTo(nose[0], nose[1]); ctx.stroke();
+  ctx.fillStyle = "#8b9aab";
+  ctx.fillText((lastCloud.shown || pts.length) + " / " + (lastCloud.pointCount || pts.length) + " 点 · 车头朝上", 12, H - 10);
+}
+function renderSlamMaps(items) {
+  const box = document.getElementById("slamMapList");
+  if (!box) return;
+  if (!items || !items.length) {
+    box.innerHTML = '<div class="hint" style="padding:8px">maps/ 里还没有 simplemap / mm / json / png。</div>';
+    return;
+  }
+  const label = {occupancy:"占用格 JSON", not_for_loc:"仅存档，不能定位", archive:"MOLA/其它", qualified:"合格定位图"};
+  box.innerHTML = "";
+    items.forEach((it) => {
+      const wrap = document.createElement("div");
+      const b = document.createElement("button");
+      b.type = "button";
+      const kb = it.bytes > 1024 * 1024 ? (it.bytes/1048576).toFixed(1) + " MB" : Math.round(it.bytes/1024) + " KB";
+      const when = it.mtime ? new Date(it.mtime * 1000).toLocaleString() : "";
+      b.textContent = it.name + "  ·  " + kb + "  ·  " + (label[it.usable] || it.kind) + (when ? "  ·  " + when : "");
+      b.addEventListener("click", () => {
+        if (it.kind === "json") document.getElementById("mapFile").value = "maps/" + it.name;
+      });
+      wrap.appendChild(b);
+      if (it.kind === "png") {
+        const img = document.createElement("img");
+        img.src = "/maps/" + encodeURIComponent(it.name);
+        img.alt = it.name;
+        img.style.cssText = "display:block;max-width:100%;margin:6px 8px 12px;border-radius:8px;border:1px solid var(--line)";
+        wrap.appendChild(img);
+      }
+      box.appendChild(wrap);
+    });
+}
+function occCanvasToWorld(ev) {
+  const c = document.getElementById("occCanvas");
+  if (!c || !lastOcc) return null;
+  const pose = lastOcc.pose || {};
+  const px = Number(pose.x) || 0, py = Number(pose.y) || 0;
+  const pts = [[0,0],[px,py]];
+  ["occupied","blocked","free"].forEach((k) => {
+    asXY(lastOcc[k]).forEach((xy) => pts.push([Number(xy[0]), Number(xy[1])]));
+  });
+  const rect = c.getBoundingClientRect();
+  const W = c.width, H = c.height;
+  const {toXY, span, cx, cy} = worldScale(pts, W, H, 1.0);
+  const sx = (ev.clientX - rect.left) * (W / rect.width);
+  const sy = (ev.clientY - rect.top) * (H / rect.height);
+  const x = cx + (sx - W/2) / (W - 28) * span;
+  const y = cy - (sy - H/2) / (H - 28) * span;
+  return {x, y};
+}
 function connect() {
   const proto = location.protocol === "https:" ? "wss" : "ws";
   ws = new WebSocket(proto + "://" + location.host + "/ws");
@@ -978,12 +1932,18 @@ function connect() {
     stickNow();
     send({t:"tracks"});
     loadChassis();
+    if (currentPage() === "lidar") {
+      requestLidarVisuals(true);
+      send({t:"slam_maps"});
+    }
+    if (currentPage() === "autonav") sendCmd("autonav_map", {}, true);
   };
   ws.onclose = () => { setLink(false, "重连中"); setTimeout(connect, 800); };
   ws.onerror = () => {};
   ws.onmessage = (ev) => {
+    let m;
+    try { m = JSON.parse(ev.data); } catch (e) { return; }
     try {
-      const m = JSON.parse(ev.data);
       if (m.t === "p" && typeof m.t0 === "number") rtt = performance.now() - m.t0;
       if (m.t === "ack") {
         applied = "v=" + Number(m.v).toFixed(2) + " w=" + Number(m.w).toFixed(2);
@@ -1009,9 +1969,38 @@ function connect() {
           if (p.event === "arrived" || p.event === "track_record" || p.event === "track_follow") send({t:"tracks"});
         }
       }
-      if (m.t === "cmd_ok") log("工控机已收 " + (m.action || "cmd"));
+      if (m.t === "cmd_ok") {
+        if (m.action !== "lidar_map" && m.action !== "point_cloud" && m.action !== "lidar_status" && m.action !== "autonav_map") {
+          log("工控机已收 " + (m.action || "cmd"));
+        }
+        if (m.action === "lidar_on") setTimeout(function () { requestLidarVisuals(true); }, 500);
+        if (m.action === "lidar_off") {
+          lastOcc = lastCloud = lastLidarStatus = null;
+          drawOcc();
+          drawCloud();
+          renderLidarStatus(null, lastState || {});
+        }
+      }
       if (m.t === "cmd_err") log("指令失败 " + (m.action || "") + " " + (m.msg || ""));
       if (m.t === "tracks") renderTracks(m.items || []);
+      if (m.t === "slam_maps") renderSlamMaps(m.items || []);
+      if (m.t === "lidar_map") {
+        lastOcc = m.payload || {};
+        drawOcc();
+        if (currentPage() === "nav") drawPose(lastState || {});
+      }
+      if (m.t === "autonav_map") {
+        lastAutoMap = m.payload || {};
+        drawAuto();
+      }
+      if (m.t === "point_cloud") {
+        lastCloud = m.payload || {};
+        drawCloud();
+      }
+      if (m.t === "lidar_status") {
+        lastLidarStatus = m.payload || {};
+        renderLidarStatus(lastLidarStatus, lastState || {});
+      }
       if (m.t === "view") log(m.msg || ("窗口 " + m.mode));
     } catch (e) {}
   };
@@ -1039,6 +2028,79 @@ function bindPad(id, key) {
   el.addEventListener("pointerleave", off);
 }
 ["kw","ka","ks","kd"].forEach((id, i) => bindPad(id, "wasd"[i]));
+const occCanvas = document.getElementById("occCanvas");
+if (occCanvas) {
+  occCanvas.addEventListener("click", (ev) => {
+    const w = occCanvasToWorld(ev);
+    if (!w) return;
+    const gx = document.getElementById("gx");
+    const gy = document.getElementById("gy");
+    if (gx) gx.value = w.x.toFixed(2);
+    if (gy) gy.value = w.y.toFixed(2);
+    log("占用格点击 → goto (" + w.x.toFixed(2) + ", " + w.y.toFixed(2) + ")");
+    drawPose(lastState || {});
+  });
+}
+function autoPickGoal(sx, sy) {
+  const w = autoCanvasWorld(sx, sy);
+  const ax = document.getElementById("ax");
+  const ay = document.getElementById("ay");
+  if (ax) ax.value = w.x.toFixed(2);
+  if (ay) ay.value = w.y.toFixed(2);
+  log("自动导航点击 → " + startFrameLabel() + " (" + w.x.toFixed(2) + ", " + w.y.toFixed(2) + ")");
+  renderAutonav(lastState || {});
+  drawAuto();
+}
+const autoCanvas = document.getElementById("autoCanvas");
+if (autoCanvas) {
+  autoCanvas.addEventListener("wheel", (ev) => {
+    ev.preventDefault();
+    const loc = autoCanvasLocal(ev, autoCanvas);
+    autoZoomBy(ev.deltaY < 0 ? 1.18 : 1 / 1.18, loc.sx, loc.sy);
+  }, { passive: false });
+  autoCanvas.addEventListener("dblclick", (ev) => {
+    ev.preventDefault();
+    autoCamReset();
+    drawAuto();
+  });
+  autoCanvas.addEventListener("pointerdown", (ev) => {
+    if (ev.button !== 0) return;
+    autoCanvas.setPointerCapture(ev.pointerId);
+    const loc = autoCanvasLocal(ev, autoCanvas);
+    autoDrag = { x: ev.clientX, y: ev.clientY, sx: loc.sx, sy: loc.sy, moved: false };
+  });
+  autoCanvas.addEventListener("pointermove", (ev) => {
+    if (!autoDrag) return;
+    const dxCss = ev.clientX - autoDrag.x;
+    const dyCss = ev.clientY - autoDrag.y;
+    if (!autoDrag.moved && dxCss * dxCss + dyCss * dyCss < 25) return;
+    autoDrag.moved = true;
+    autoCanvas.classList.add("panning");
+    const rect = autoCanvas.getBoundingClientRect();
+    const dx = dxCss * (autoCanvas.width / rect.width);
+    const dy = dyCss * (autoCanvas.height / rect.height);
+    const view = autoView(autoCanvas.width, autoCanvas.height);
+    autoCam.user = true;
+    autoCam.cx = view.cx - dx / (autoCanvas.width - 28) * view.span;
+    autoCam.cy = view.cy + dy / (autoCanvas.height - 28) * view.span;
+    autoDrag.x = ev.clientX;
+    autoDrag.y = ev.clientY;
+    drawAuto();
+  });
+  function autoPointerEnd(ev) {
+    if (!autoDrag) return;
+    const drag = autoDrag;
+    autoDrag = null;
+    autoCanvas.classList.remove("panning");
+    try { autoCanvas.releasePointerCapture(ev.pointerId); } catch (e) {}
+    const now = performance.now();
+    const dbl = now - (autoLastUpAt || 0) < 280;
+    autoLastUpAt = now;
+    if (!drag.moved && !dbl) autoPickGoal(drag.sx, drag.sy);
+  }
+  autoCanvas.addEventListener("pointerup", autoPointerEnd);
+  autoCanvas.addEventListener("pointercancel", autoPointerEnd);
+}
 document.getElementById("btnEstop").addEventListener("click", () => { send({t:"e"}); log("ESTOP"); });
 document.getElementById("btnChassis").addEventListener("click", chassisOpen);
 document.getElementById("cardBat").addEventListener("click", chassisOpen);
@@ -1055,10 +2117,17 @@ document.getElementById("btnMinus").addEventListener("click", () => { vStep = Ma
 document.querySelectorAll("[data-act]").forEach((btn) => {
   btn.addEventListener("click", () => handleAct(btn.getAttribute("data-act")));
 });
-["mv","mw","md","gx","gy"].forEach((id) => {
+["mv","mw","md","gx","gy","gs","gyaw","ax","ay","as","ayaw"].forEach((id) => {
   const el = document.getElementById(id);
   if (!el) return;
-  el.addEventListener("input", () => { refreshPreviews(); drawPose(lastState || {}); });
+  el.addEventListener("input", () => {
+    refreshPreviews();
+    drawPose(lastState || {});
+    if (id === "ax" || id === "ay" || id === "ayaw") {
+      renderAutonav(lastState || {});
+      drawAuto();
+    }
+  });
 });
 document.querySelectorAll("[data-move]").forEach((btn) => {
   btn.addEventListener("click", () => {
@@ -1096,6 +2165,13 @@ document.querySelectorAll("[data-goto-rel]").forEach((btn) => {
     handleAct("goto");
   });
 });
+const autoFrameSel = document.getElementById("autoFrame");
+if (autoFrameSel) {
+  autoFrameSel.addEventListener("change", () => {
+    autoCamReset();
+    renderAutonav(lastState || {});
+  });
+}
 document.addEventListener("keydown", (e) => {
   if (e.repeat) { if (!typing() && (CODE[e.code] || e.code === "Space")) e.preventDefault(); return; }
   if (setKey(e.code, true, e)) stickNow();
@@ -1131,6 +2207,28 @@ setInterval(() => {
     n = 0;
     lastHz = now;
     if (ws && ws.readyState === 1) send({t:"p", t0: now});
+  }
+  if (
+    currentPage() === "lidar"
+    && ws && ws.readyState === 1
+    && document.getElementById("lidarLive")
+    && document.getElementById("lidarLive").checked
+    && lastState
+    && lastState.lidar
+    && lastState.lidar.online
+    && now - lidarPollAt > 1000
+  ) {
+    lidarPollAt = now;
+    sendCmd("lidar_map", {includeFree: false}, true);
+    sendCmd("point_cloud", {}, true);
+  }
+  if (
+    currentPage() === "autonav"
+    && ws && ws.readyState === 1
+    && now - autoPollAt > (isSketchFrame() ? 800 : 1500)
+  ) {
+    autoPollAt = now;
+    sendCmd("autonav_map", {}, true);
   }
   setLink(!!(ws && ws.readyState === 1));
   paint();

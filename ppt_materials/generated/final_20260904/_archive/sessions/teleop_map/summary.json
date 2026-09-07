@@ -1,0 +1,41 @@
+{
+  "n_rows": 822,
+  "t_end": 340.773,
+  "t_last_moving": 306.507,
+  "freeze_from_s": 10.259,
+  "start": {
+    "x": -1.181901,
+    "y": 0.706301,
+    "yaw": 16.143,
+    "q": 0.5152,
+    "local": 1704.0
+  },
+  "end_last_moving": {
+    "x": 3.149425,
+    "y": 0.009132,
+    "yaw": 6.808,
+    "q": 0.6142,
+    "local": 3048.0
+  },
+  "end_logged": {
+    "x": 3.149425,
+    "y": 0.009132,
+    "yaw": 6.808,
+    "q": 0.6142,
+    "local": 3048.0
+  },
+  "disp_m": 4.387,
+  "path_m": 9.732,
+  "dyaw_deg": -9.34,
+  "yaw_min": -46.62,
+  "yaw_max": 14.87,
+  "local_start": 1704.0,
+  "local_end": 3048.0,
+  "lidar_hz_avg_moving": 16.24,
+  "pose_hz_avg_moving": 4.52,
+  "q_min": 0.503,
+  "q_max": 1.0,
+  "q_avg": 0.636,
+  "icp_fail_n": 0,
+  "tf_ok_frac": 0.995
+}

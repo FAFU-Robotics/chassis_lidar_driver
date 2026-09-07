@@ -1,0 +1,61 @@
+{
+  "date": "2026-09-04",
+  "start_wall": "2026-09-04 11:14:38",
+  "motion_start_rel_s": 67.031,
+  "last_mola_pose_update_rel_s": 91.78,
+  "operator_stop_wall": "2026-09-04 11:17:00",
+  "start_pose": {
+    "x": -0.05,
+    "y": -0.009,
+    "yaw_deg": -0.26,
+    "quality": 0.982
+  },
+  "end_pose_last_published": {
+    "x": 3.111,
+    "y": -0.081,
+    "yaw_deg": -71.76,
+    "quality": 0.593
+  },
+  "disp_m": 3.162,
+  "path_length_m": 3.442,
+  "x_range_m": [
+    -0.052,
+    3.111
+  ],
+  "y_range_m": [
+    -0.081,
+    0.184
+  ],
+  "yaw_range_deg": [
+    -71.76,
+    0.0
+  ],
+  "dyaw_deg": -71.5,
+  "quality": {
+    "min": 0.593,
+    "max": 0.997,
+    "avg": 0.87,
+    "last": 0.593
+  },
+  "localmap_points": {
+    "start": 1133,
+    "mid": 1489,
+    "end": 1537,
+    "delta": 404,
+    "keyframe_updates": 2
+  },
+  "icp_failure_count": 0,
+  "pose_froze_after_s": 62.3,
+  "pose_hz_end": 0.0,
+  "lidar_hz_end": 10.0,
+  "grid_end": {
+    "hz": 5.01,
+    "size": "120x120",
+    "res": 0.1,
+    "occupied": 63,
+    "inflated": 704,
+    "free": 51,
+    "unknown": 13582
+  },
+  "note": "Human teleop. No CAN from Cursor. Pose stopped after yaw~-72deg; last published pose used as end. Localmap grew 1133->1537. RViz ppt_live.rviz was live; no matplotlib fake clouds."
+}

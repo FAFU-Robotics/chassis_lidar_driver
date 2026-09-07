@@ -72,6 +72,38 @@ def now_us() -> int:
     return int(time.monotonic() * 1_000_000) & 0xFFFFFFFF
 
 
+def json_bytes(obj: object) -> Optional[bytes]:
+    """序列化控制台 JSON：禁止 NaN/Infinity（浏览器 JSON.parse 会整包失败）。"""
+    try:
+        return json.dumps(obj, ensure_ascii=False, allow_nan=False).encode("utf-8")
+    except (TypeError, ValueError):
+        pass
+    try:
+        return json.dumps(_clean_json(obj), ensure_ascii=False, allow_nan=False).encode("utf-8")
+    except (TypeError, ValueError):
+        return None
+
+
+def _clean_json(obj: object) -> object:
+    if isinstance(obj, float):
+        if obj != obj or obj in (float("inf"), float("-inf")):
+            return None
+        return obj
+    if isinstance(obj, dict):
+        return {str(k): _clean_json(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_clean_json(v) for v in obj]
+    if isinstance(obj, (str, int, bool)) or obj is None:
+        return obj
+    item = getattr(obj, "item", None)
+    if callable(item):
+        try:
+            return _clean_json(item())
+        except Exception:
+            return None
+    return str(obj)
+
+
 def pack_frame(typ: int, payload: bytes = b"", seq: int = 0, t_us: int = 0,
                flags: int = 0) -> bytes:
     if len(payload) > MAX_FRAME:
@@ -149,6 +181,7 @@ class TeleopTcpServer:
         self._watchdog: Optional[threading.Thread] = None
         self._conns: list[socket.socket] = []
         self._conns_lock = threading.Lock()
+        self._send_lock = threading.Lock()
         self.clients = 0
         self.last_rtt_us = 0
 
@@ -195,20 +228,22 @@ class TeleopTcpServer:
                     pass
             self._conns.clear()
 
+    def _sendall(self, conn: socket.socket, data: bytes) -> None:
+        """同一条 TCP 上 ACK 和事件必须串行，否则大包雷达画面会把流写乱。"""
+        with self._send_lock:
+            conn.sendall(data)
+
     def push_event(self, msg: dict) -> None:
         """把状态/事件推给已鉴权的 TCP 控制台（不经 WebSocket）。"""
-        try:
-            raw = json.dumps(msg, ensure_ascii=False).encode("utf-8")
-        except (TypeError, ValueError):
-            return
-        if len(raw) > MAX_FRAME:
+        raw = json_bytes(msg)
+        if raw is None or len(raw) > MAX_FRAME:
             return
         frame = pack_frame(TYPE_EVENT, raw)
         with self._conns_lock:
             conns = list(self._conns)
         for conn in conns:
             try:
-                conn.sendall(frame)
+                self._sendall(conn, frame)
             except OSError:
                 pass
 
@@ -252,15 +287,15 @@ class TeleopTcpServer:
             _typ, _flags, seq, t_us, payload = hello
             token = payload.decode("utf-8", "replace")
             if token != self.token:
-                conn.sendall(pack_frame(TYPE_ACK, b"\x01", seq=seq, t_us=t_us))
+                self._sendall(conn, pack_frame(TYPE_ACK, b"\x01", seq=seq, t_us=t_us))
                 return
             authed = True
             with self._conns_lock:
                 self._conns.append(conn)
-            conn.sendall(pack_frame(TYPE_ACK, b"\x00", seq=seq, t_us=t_us))
+            self._sendall(conn, pack_frame(TYPE_ACK, b"\x00", seq=seq, t_us=t_us))
             while not self._stop.is_set():
                 try:
-                    chunk = conn.recv(512)
+                    chunk = conn.recv(65536)
                 except socket.timeout:
                     continue
                 if not chunk:
@@ -298,7 +333,7 @@ class TeleopTcpServer:
             except Exception:
                 pass
         if typ == TYPE_PING:
-            conn.sendall(pack_frame(TYPE_ACK, b"\x00", seq=seq, t_us=t_us))
+            self._sendall(conn, pack_frame(TYPE_ACK, b"\x00", seq=seq, t_us=t_us))
             return
         if typ == TYPE_STICK and len(payload) >= STICK.size:
             v_mm, w_mrad, _btns = STICK.unpack_from(payload)
@@ -307,48 +342,48 @@ class TeleopTcpServer:
                 self.on_stick(v_mm / 1000.0, w_mrad / 1000.0)
             # 默认不 ACK：100Hz stick 的回程会占 Wi-Fi，客户端也不等。
             if flags & FLAG_ACK:
-                conn.sendall(pack_frame(TYPE_ACK, b"\x00", seq=seq, t_us=t_us))
+                self._sendall(conn, pack_frame(TYPE_ACK, b"\x00", seq=seq, t_us=t_us))
             return
         if typ == TYPE_MOVE and len(payload) >= MOVE.size:
             v, w, dur, flags = MOVE.unpack_from(payload)
             if self.on_move is not None:
                 self.on_move(v, w, dur, bool(flags & MOVE_BYPASS))
-            conn.sendall(pack_frame(TYPE_ACK, b"\x00", seq=seq, t_us=t_us))
+            self._sendall(conn, pack_frame(TYPE_ACK, b"\x00", seq=seq, t_us=t_us))
             return
         if typ == TYPE_ESTOP:
             if self.on_estop is not None:
                 self.on_estop()
-            conn.sendall(pack_frame(TYPE_ACK, b"\x00", seq=seq, t_us=t_us))
+            self._sendall(conn, pack_frame(TYPE_ACK, b"\x00", seq=seq, t_us=t_us))
             return
         if typ == TYPE_QUERY:
             v, w = (0.0, 0.0)
             if self.on_query is not None:
                 v, w = self.on_query()
-            conn.sendall(pack_frame(TYPE_STATE, STATE.pack(v, w), seq=seq, t_us=t_us))
+            self._sendall(conn, pack_frame(TYPE_STATE, STATE.pack(v, w), seq=seq, t_us=t_us))
             return
         if typ == TYPE_GOTO and len(payload) >= GOTO.size:
             x, y, speed = GOTO.unpack_from(payload)
             if self.on_goto is not None:
                 self.on_goto(x, y, speed)
-            conn.sendall(pack_frame(TYPE_ACK, b"\x00", seq=seq, t_us=t_us))
+            self._sendall(conn, pack_frame(TYPE_ACK, b"\x00", seq=seq, t_us=t_us))
             return
         if typ == TYPE_CMD:
             try:
                 obj = json.loads(payload.decode("utf-8"))
             except (UnicodeDecodeError, json.JSONDecodeError):
-                conn.sendall(pack_frame(TYPE_ACK, b"\x03", seq=seq, t_us=t_us))
+                self._sendall(conn, pack_frame(TYPE_ACK, b"\x03", seq=seq, t_us=t_us))
                 return
             if not isinstance(obj, dict):
-                conn.sendall(pack_frame(TYPE_ACK, b"\x03", seq=seq, t_us=t_us))
+                self._sendall(conn, pack_frame(TYPE_ACK, b"\x03", seq=seq, t_us=t_us))
                 return
             # 先 ACK 再异步执行：map_upload / 回放等慢命令不能挡住 100Hz stick
-            conn.sendall(pack_frame(TYPE_ACK, b"\x00", seq=seq, t_us=t_us))
+            self._sendall(conn, pack_frame(TYPE_ACK, b"\x00", seq=seq, t_us=t_us))
             if self.on_cmd is not None:
                 threading.Thread(
                     target=self._run_cmd, args=(obj,), name="teleop-cmd", daemon=True,
                 ).start()
             return
-        conn.sendall(pack_frame(TYPE_ACK, b"\x02", seq=seq, t_us=t_us))
+        self._sendall(conn, pack_frame(TYPE_ACK, b"\x02", seq=seq, t_us=t_us))
 
     def _run_cmd(self, obj: dict) -> None:
         try:
@@ -373,6 +408,7 @@ class TeleopTcpClient:
         self._seq_lock = threading.Lock()
         self._send_lock = threading.Lock()
         self._events: deque = deque(maxlen=200)
+        self._evt_lock = threading.Lock()
         self._acks: dict[int, tuple] = {}
         self._waiting: set[int] = set()
         self._ack_cv = threading.Condition()
@@ -405,7 +441,7 @@ class TeleopTcpClient:
         while not self._closed:
             try:
                 self.sock.settimeout(0.2)
-                chunk = self.sock.recv(512)
+                chunk = self.sock.recv(65536)
             except socket.timeout:
                 continue
             except OSError:
@@ -420,9 +456,12 @@ class TeleopTcpClient:
                 rtyp, _flags, rseq, t_us, rpay = parsed
                 if rtyp == TYPE_EVENT:
                     try:
-                        self._events.append(json.loads(rpay.decode("utf-8")))
+                        obj = json.loads(rpay.decode("utf-8"))
                     except (UnicodeDecodeError, json.JSONDecodeError):
-                        pass
+                        obj = None
+                    if obj is not None:
+                        with self._evt_lock:
+                            self._events.append(obj)
                     continue
                 with self._ack_cv:
                     if rseq in self._waiting:
@@ -477,8 +516,9 @@ class TeleopTcpClient:
 
     def poll_events(self) -> list[dict]:
         """非阻塞取出已收到的状态/事件。"""
-        out = list(self._events)
-        self._events.clear()
+        with self._evt_lock:
+            out = list(self._events)
+            self._events.clear()
         return out
 
     def cmd(self, payload: dict, timeout: float = 3.0) -> int:

@@ -103,6 +103,9 @@ class _Nav:
     def apply_external_pose(self, x, y, yaw_deg):
         self.pose = Pose2D(x, y, yaw_deg * 3.141592653589793 / 180.0)
 
+    def apply_yaw_correction(self, yaw_deg):
+        self.pose = Pose2D(self.pose.x, self.pose.y, yaw_deg * 3.141592653589793 / 180.0)
+
 
 class _FakePlayer:
     is_playing = False
@@ -322,6 +325,7 @@ def test_push_state_reports_localization_health(agent):
     assert fake_ws.sent
     payload = json.loads(fake_ws.sent[-1])["payload"]
     assert payload["localization"]["source"] == "scanmatch"
+    assert payload["localization"]["wheelbaseM"] == pytest.approx(0.5)
     assert payload["localization"]["lastCorrection"]["dx"] == 0.01
     assert payload["localization"]["lastCorrection"]["agoS"] >= 0.0
 
@@ -768,3 +772,24 @@ def test_scan_match_skip_only_fast_spin(agent):
     agent._navigator.pose = Pose2D(0.1, 0.0, math.radians(8.0 + 20.0))
     agent._scan_match_tick()
     assert not seen, "20° 猛转才跳过"
+
+
+def test_scan_match_yaw_only_keeps_xy(agent):
+    from bunker_mini.scanmatch import ScanMatcher
+
+    class _Matcher(ScanMatcher):
+        def match(self, sectors, x, y, yaw_deg):
+            return (0.50, -0.40, 6.0)
+
+        def observe(self, sectors, x, y, yaw_deg):
+            return None
+
+    agent._scan_matcher = _Matcher()
+    agent._scan_match_blend = 1.0
+    agent._scan_match_last_yaw = None
+    agent._navigator.pose = Pose2D(2.0, 3.0, 0.0)
+    agent._scan_match_tick(yaw_only=True)
+    assert agent._navigator.pose.x == pytest.approx(2.0)
+    assert agent._navigator.pose.y == pytest.approx(3.0)
+    assert agent._navigator.pose.yaw_deg == pytest.approx(6.0, abs=0.05)
+    assert agent._loc_source == "yawmatch"

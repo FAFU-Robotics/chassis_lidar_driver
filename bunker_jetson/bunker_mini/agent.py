@@ -38,8 +38,17 @@ from .can_util import (
     _is_usb_netdev,
 )
 from .controller import BunkerMiniController
-from .lidar import AiryLidar, LidarError, MSOP_PORT, SelfMaskConfig
-from .navigator import NavigateConfig, Navigator, OdometryPose, Pose2D
+from .lidar import AiryLidar, LidarError, MSOP_PORT, SelfMaskConfig, msop_udp_bound
+from .navigator import (
+    NavigateConfig,
+    Navigator,
+    OdometryPose,
+    Pose2D,
+    WHEELBASE_MAX_M,
+    WHEELBASE_MIN_M,
+    save_wheelbase_m,
+    scale_wheelbase,
+)
 from .failsafe import (
     ACTIVE_MISSION_STATUSES,
     FailsafeMonitor,
@@ -49,11 +58,29 @@ from .failsafe import (
     checkpoint_path_for,
     should_return_on_power,
 )
-from .obstacle import ObstacleGuard, ObstaclePolicy
+from .obstacle import (
+    ObstacleGuard,
+    VEHICLE_HEIGHT_M,
+    VEHICLE_LENGTH_M,
+    VEHICLE_WIDTH_M,
+    make_obstacle_policy,
+)
 from .occupancy import BLOCKED, FREE, OCCUPIED, OccupancyGrid, PSEUDO_MAP_TTL_S
+from .terrain import DEFAULT_STEP_LIMIT_M
 from .global_planner import GlobalPlanner
+from .click_layer import load_click_layer
 from .localization import MapAlignment
 from .pcap import PcapReplaySource, PcapError
+from .qualified_maps import (
+    catalog as qualified_catalog,
+    is_banned,
+    is_qualified,
+    load_selected_map_id,
+    normalize_map_id,
+    save_selected_map_id,
+)
+from .ros_pose import TfPoseSource
+from .rslidar_cloud import DEFAULT_HEIGHT_M, RslidarCloudSource
 from .patrol import PatrolConfig, PatrolController
 from .protocol import (
     ControlMode,
@@ -72,6 +99,7 @@ from .tracker import (
     TrackPlayer,
     TrackRecorder,
     sanitize_track_name,
+    track_origin_quality,
 )
 from .vision import ReflectivityDetector, target_to_odom
 # 机械臂「抓取完成」信号桥接（独立包 arm_bridge/，仅在配置信号通道时启用）。
@@ -131,12 +159,19 @@ RECONNECT_MAX_S: float = 30.0           # exponential backoff ceiling
 # 更接近 robosense_airy 的观感（80000 点），但受 WebSocket 带宽与
 # matplotlib 渲染帧率约束，8000 点是密度与流畅度的较好折中。
 PC_STREAM_MAX_POINTS: int = 8000
+# 网页走 TCP :9100，单帧上限 60KB。点云/占用格必须裁到这个体积，
+# 并去掉 payload.msg 里那份完整 JSON 副本（否则体积直接翻倍）。
+TCP_PC_MAX_POINTS: int = 250
+TCP_MAP_CELL_CAP: int = 250
+TCP_VISUAL_MAX_BYTES: int = 24_000
 
 # Safety clamp for remote `move` commands. The chassis accepts up to
 # 1.3 m/s / 2.0 rad/s, but we cap remote velocity far below that so a
 # buggy or malicious cloud client cannot drive the vehicle at full speed.
 MAX_SAFE_LINEAR_M_S: float = 0.5
 MAX_SAFE_ANGULAR_RAD_S: float = 1.0
+# 网页/控制台 goto 未填限速时的默认值（室内履带；仍可用 speed 提到上限）
+GOTO_DEFAULT_SPEED_M_S: float = 0.15
 
 # Remote `move` is a continuous velocity command.  A cloud operator who
 # sends a single `move` (as the local mock_cloud does) must never leave the
@@ -150,6 +185,112 @@ MOVE_WATCHDOG_INTERVAL_S: float = 0.2
 # kb / bypass_guard 遥控：单包 duration 上限。云端停键后若停车包丢失，
 # 最多再走这么久，不能把 0.90s 保活当成继续冲的许可证。
 TELEOP_DURATION_CAP_S: float = 0.35
+
+
+def _cap_list(items: Any, cap: int) -> list:
+    if not isinstance(items, list) or cap <= 0:
+        return []
+    if len(items) <= cap:
+        return items
+    step = max(1, int(math.ceil(len(items) / cap)))
+    return items[::step][:cap]
+
+
+def slim_tcp_visual(event: str, data: dict) -> dict:
+    """给本地网页用的雷达画面：保留能画图的字段，去掉 ASCII/重复 JSON。"""
+    if event == "point_cloud":
+        raw_pts = data.get("points") if isinstance(data.get("points"), list) else []
+        pts = _cap_list(raw_pts, TCP_PC_MAX_POINTS)
+        xy: list[list[float]] = []
+        for p in pts:
+            if not isinstance(p, (list, tuple)) or len(p) < 2:
+                continue
+            try:
+                xy.append([round(float(p[0]), 2), round(float(p[1]), 2)])
+            except (TypeError, ValueError):
+                continue
+        return {
+            "online": bool(data.get("online")),
+            "pointCount": int(data.get("pointCount") or len(raw_pts)),
+            "shown": len(xy),
+            "points": xy,
+            "pose": data.get("pose"),
+            "target": data.get("target"),
+        }
+    if event == "lidar_map":
+        out = {
+            "online": bool(data.get("online")),
+            "ready": data.get("ready", True),
+            "resolution": data.get("resolution"),
+            "occupiedCells": data.get("occupiedCells"),
+            "blockedCells": data.get("blockedCells"),
+            "freeCells": data.get("freeCells"),
+            "occupied": _cap_list(data.get("occupied"), TCP_MAP_CELL_CAP),
+            "blocked": _cap_list(data.get("blocked"), TCP_MAP_CELL_CAP),
+            "free": _cap_list(data.get("free"), TCP_MAP_CELL_CAP),
+            "pose": data.get("pose"),
+            "target": data.get("target"),
+            "targetCheck": data.get("targetCheck"),
+        }
+        if not out["free"]:
+            out.pop("free", None)
+        return out
+    if event == "autonav_map":
+        out = dict(data)
+        for key in (
+            "occupied", "blocked", "free",
+            "sketchOccupied", "odomOccupied", "odomBlocked", "odomFree",
+            "cloudXY",
+        ):
+            arr = out.get(key)
+            if isinstance(arr, list):
+                out[key] = _cap_list(arr, TCP_MAP_CELL_CAP)
+        return out
+    return dict(data)
+
+
+def fit_tcp_visual(event: str, data: dict) -> dict:
+    """把画面压进 TCP 60KB 帧；超限先丢自由格，再对半抽稀。"""
+    slim = slim_tcp_visual(event, data)
+    envelope = {"type": "event", "payload": {"event": event, "msg": "x", "data": slim}}
+
+    def nbytes(d: dict) -> int:
+        envelope["payload"]["data"] = d
+        return len(json.dumps(envelope, ensure_ascii=False).encode("utf-8"))
+
+    while nbytes(slim) > TCP_VISUAL_MAX_BYTES:
+        nxt = dict(slim)
+        if nxt.get("free") or nxt.get("odomFree"):
+            nxt.pop("free", None)
+            nxt.pop("odomFree", None)
+        elif nxt.get("cloudXY"):
+            cloud = nxt.get("cloudXY") or []
+            if len(cloud) <= 40:
+                nxt.pop("cloudXY", None)
+            else:
+                nxt["cloudXY"] = _cap_list(cloud, max(40, len(cloud) // 2))
+        elif event == "point_cloud":
+            pts = nxt.get("points") or []
+            if len(pts) <= 40:
+                break
+            nxt["points"] = _cap_list(pts, max(40, len(pts) // 2))
+            nxt["shown"] = len(nxt["points"])
+        elif event in ("lidar_map", "autonav_map"):
+            shrunk = False
+            for key in (
+                "occupied", "blocked", "sketchOccupied",
+                "odomOccupied", "odomBlocked", "free",
+            ):
+                arr = nxt.get(key) or []
+                if len(arr) > 40:
+                    nxt[key] = _cap_list(arr, max(40, len(arr) // 2))
+                    shrunk = True
+            if not shrunk:
+                break
+        else:
+            break
+        slim = nxt
+    return slim
 
 
 class AgentState(Enum):
@@ -191,13 +332,15 @@ class Command:
     duration: float = 0.0   # for move: keep this velocity for N seconds, then auto-stop (0 = rely on keep-alive watchdog)
     x: float = 0.0          # for goto: goal x (m, vehicle frame)
     y: float = 0.0          # for goto: goal y (m, vehicle frame)
-    speed: float = 0.0      # for goto: 导航线速度上限 m/s（0 = 用默认 0.30）
+    speed: float = 0.0      # for goto: 导航线速度上限 m/s（0 = 用 GOTO_DEFAULT_SPEED_M_S）
+    wheelbase_m: float = 0.0  # set_wheelbase / calibrate_wheelbase
     approach: bool = True   # for find_object: 默认进入底盘对接（对准/逼近/停稳）；False=只开到停靠点就返回
     hz: float = 0.0         # for pc_stream: 点云推送频率 Hz（>0 开流，<=0 关流）
     silent: bool = False    # for lidar_map: 云端轮询时置 True，避免控制台刷屏
     include_free: bool = False  # for lidar_map: 快照附带自由格坐标（地图模式渲染用）
     yaw_deg: float = 0.0    # pose_align / goto 终点航向（度）
     goal_yaw_set: bool = False  # True 当载荷带了 yawDeg（goto 用来区分「未指定」）
+    frame: str = ""         # autonav_goto: odom=出发系（默认） / sketch=现场图 / map=地图系
     ts_ms: int = 0          # envelope timestamp (ms); 0 = legacy cloud omitted it
     cells: list = field(default_factory=list)   # for map_upload: [[x, y, value], ...]
     resolution: float = 0.0  # for map_upload: 导入栅格分辨率 m（0=沿用现有）
@@ -234,6 +377,7 @@ class Command:
             x=_to_float(payload.get("x")),
             y=_to_float(payload.get("y")),
             speed=_to_float(payload.get("speed")),
+            wheelbase_m=_to_float(payload.get("wheelbaseM")),
             approach=bool(payload["approach"]) if "approach" in payload
                     else True,
             hz=_to_float(payload.get("hz")),
@@ -241,6 +385,7 @@ class Command:
             include_free=bool(payload.get("includeFree", False)),
             yaw_deg=_to_float(payload.get("yawDeg")),
             goal_yaw_set="yawDeg" in payload,
+            frame=str(payload.get("frame") or "").strip().lower(),
             cells=payload.get("cells", []) or [],
             resolution=_to_float(payload.get("resolution")),
             map_return=bool(payload.get("mapReturn", False)),
@@ -285,12 +430,13 @@ class BunkerMiniAgent:
         lidar_host: str = "0.0.0.0",
         lidar_port: int = MSOP_PORT,
         lidar_pcap: str | None = None,
+        lidar_source: str = "auto",
         lidar_mount_yaw_deg: float = 0.0,
         lidar_pitch_deg: float = 0.0,
         lidar_height_m: float = 0.0,
         lidar_self_mask: bool = True,
         wheelbase_m: float = 0.5,
-        step_limit_m: float = 0.07,
+        step_limit_m: float = DEFAULT_STEP_LIMIT_M,
         recon_max_duration_s: float = 120.0,
         recon_max_distance_m: float = 20.0,
         # --- 系统性搜索（初始 360° 扫描 + 周期性扫描停顿） ---
@@ -308,6 +454,8 @@ class BunkerMiniAgent:
         # --- 轻量扫描匹配（本机漂移闭环，建图前兜底；pose_source 优先） ---
         enable_scan_match: bool = True,
         scan_match_blend: float = 0.35,
+        # 出发系/现场图前往：默认只把扫描匹配融进航向，XY 仍锁死轮式原点。
+        autonav_yaw_match: Optional[bool] = None,
         # --- 机械臂抓取完成信号（arm_bridge/）：空 = 关闭（就位即返回） ---
         arm_grasp_signal: str = "",
         arm_wait_timeout_s: float = 90.0,
@@ -363,6 +511,8 @@ class BunkerMiniAgent:
         # Tracker (trajectory record / replay)
         self._recorder: Optional[TrackRecorder] = None
         self._player: Optional[TrackPlayer] = None
+        self._pending_record_start_pose: Optional[tuple[float, float, float]] = None
+        self._last_replay: Optional[dict[str, Any]] = None
         # Where recorded tracks are persisted (configurable for deployment)
         self._track_dir: str = track_dir or DEFAULT_TRACK_DIR
         # 网络延迟 / 断电保护（主线任务本地闭环，遥控走 TTL）
@@ -374,9 +524,13 @@ class BunkerMiniAgent:
 
         # LiDAR avoidance & navigation (created in _init_lidar)
         self._enable_lidar = enable_lidar
+        # --no-lidar：不绑 UDP，但可被动订 /rslidar_points。点云未到前允许开环前往。
+        self._lidar_passive = False
+        self._lidar_failsafe_armed = False
         self._lidar_host = lidar_host
         self._lidar_port = lidar_port
         self._lidar_pcap = lidar_pcap
+        self._lidar_source = (lidar_source or "auto").strip().lower()
         self._lidar_mount_yaw_deg = lidar_mount_yaw_deg
         self._lidar_pitch_deg = lidar_pitch_deg
         self._lidar_height_m = lidar_height_m
@@ -469,8 +623,24 @@ class BunkerMiniAgent:
         self._occ_ttl_saved: Optional[float] = None
 
         # 建图适配：外部位姿源（SLAM/视觉）与地图坐标系对齐（默认恒等）
-        self._pose_source = pose_source
+        self._tf_pose_owned = False
+        if pose_source is None:
+            self._pose_source = TfPoseSource()
+            self._tf_pose_owned = True
+        else:
+            self._pose_source = pose_source
         self._map_alignment = MapAlignment()
+        self._autonav_map_id = load_selected_map_id()
+        if self._autonav_map_id and (
+            is_banned(self._autonav_map_id) or not is_qualified(self._autonav_map_id)
+        ):
+            self._autonav_map_id = ""
+        self._autonav_active = False
+        self._autonav_frame: str = "odom"
+        self._autonav_goal_map: Optional[dict] = None
+        self._autonav_started_at: float = 0.0
+        self._autonav_loc_miss: int = 0
+        self._autonav_saw_nav: bool = False
         self._prefer_map_return = prefer_map_return
         # 动态姿态源（IMU）：不平路面实时校正点云水平基准（默认 None）
         self._attitude_source = attitude_source
@@ -480,12 +650,18 @@ class BunkerMiniAgent:
         # 轻量扫描匹配（本机漂移闭环）：在 _init_lidar 里创建
         self._scan_match_enabled = bool(enable_scan_match)
         self._scan_match_blend = float(scan_match_blend)
+        if autonav_yaw_match is None:
+            raw = str(os.environ.get("BUNKER_AUTONAV_YAW_MATCH", "1")).strip().lower()
+            autonav_yaw_match = raw not in ("0", "false", "no", "off")
+        self._autonav_yaw_match = bool(autonav_yaw_match)
         self._scan_matcher: Optional["ScanMatcher"] = None
         self._scan_match_last_yaw: Optional[float] = None
         # 定位健康度（云端监控）：当前位姿来源 odom / scanmatch / external
         self._loc_source: str = "odom"
         # 最近一次定位修正统计（dx/dy/dyawDeg/at），供云端判断导航精度可信度
         self._loc_last_corr: Optional[dict] = None
+        self._last_goto: Optional[dict] = None
+        self._last_plan_path: Optional[list[list[float]]] = None
         # 当前任务链的目标估计（结构化上报：方位/距离/半径/中心坐标），
         # 供云端验证视觉并在点云/地图视图叠加目标标记
         self._current_target: Optional[dict] = None
@@ -735,6 +911,8 @@ class BunkerMiniAgent:
             dock=PlaybackDockConfig(),
             drive=self._play_drive,
         )
+        # --no-lidar 开机也要有里程系，录制起点 / 倒放精停才有 (x,y,yaw)
+        self._ensure_navigator()
 
     def _start_teleop_tcp(self) -> None:
         """局域网 TCP 遥操：HID/move/estop/query 不走 SSH 和 WebSocket JSON。"""
@@ -797,6 +975,7 @@ class BunkerMiniAgent:
         nav = self._navigator
         if nav is not None and nav.is_navigating:
             nav.stop()
+        self._clear_autonav()
         player = self._player
         if player is not None and player.is_playing:
             player.stop()
@@ -833,13 +1012,43 @@ class BunkerMiniAgent:
             dist = None
             if goal is not None and pose is not None:
                 dist = round(math.hypot(goal[0] - pose.x, goal[1] - pose.y), 3)
+            yaw_err = None
+            goal_yaw = getattr(nav, "goal_yaw", None)
+            if goal_yaw is not None and pose is not None:
+                raw = math.degrees(goal_yaw) - float(pose.yaw_deg)
+                while raw > 180.0:
+                    raw -= 360.0
+                while raw <= -180.0:
+                    raw += 360.0
+                yaw_err = round(raw, 2)
             out["kind"] = "goto"
+            if self._autonav_active:
+                out["kind"] = "autonav"
             if goal is not None:
                 out["goto"] = {
                     "x": round(float(goal[0]), 3),
                     "y": round(float(goal[1]), 3),
                     "distM": dist,
+                    "errYawDeg": yaw_err,
                 }
+                if self._autonav_goal_map:
+                    out["goto"]["mapX"] = self._autonav_goal_map.get("x")
+                    out["goto"]["mapY"] = self._autonav_goal_map.get("y")
+                    out["goto"]["frame"] = self._autonav_goal_map.get("frame") or self._autonav_frame
+                path = self._last_plan_path
+                if path:
+                    if self._autonav_active and self._autonav_frame == "map":
+                        mapped: list[list[float]] = []
+                        for pt in path:
+                            if not isinstance(pt, (list, tuple)) or len(pt) < 2:
+                                continue
+                            mx, my, _ = self._map_alignment.odom_to_map(
+                                float(pt[0]), float(pt[1]), 0.0,
+                            )
+                            mapped.append([round(mx, 3), round(my, 3)])
+                        out["goto"]["path"] = mapped
+                    else:
+                        out["goto"]["path"] = path
             return out
         thread = self._mission_thread
         if thread is not None and thread.is_alive():
@@ -1185,20 +1394,55 @@ class BunkerMiniAgent:
     def _init_lidar(self) -> None:
         """Initial LiDAR startup (called from run())."""
         if not self._enable_lidar:
-            logger.info("LiDAR disabled (enable_lidar=False) — no obstacle avoidance")
+            # 开机 --no-lidar：绝不抢 UDP 6699，但订 /rslidar_points 给近场刹车。
+            self._lidar_source = "ros"
+            self._lidar_passive = True
+            self._lidar_failsafe_armed = False
+            if self._start_lidar():
+                logger.info(
+                    "LiDAR UDP 关闭，已订 /rslidar_points（不抢 6699）。"
+                    "点云到达前出发系前往开环；到达后近场限速/停车",
+                )
+            else:
+                logger.info(
+                    "LiDAR UDP 关闭，ROS 点云桥未拉起 — 出发系前往开环，无近场刹车",
+                )
             return
+        self._lidar_passive = False
         self._start_lidar()
 
-    def _build_lidar(self):
-        """Construct the LiDAR source (UDP or PCAP replay) per current config."""
+    def _lidar_source_mode(self) -> str:
+        """``pcap`` / ``ros`` / ``udp`` / ``auto``."""
         if self._lidar_pcap:
-            return PcapReplaySource(
-                self._lidar_pcap,
-                mount_yaw_deg=self._lidar_mount_yaw_deg,
-                pitch_deg=self._lidar_pitch_deg,
-                lidar_height_m=self._lidar_height_m,
-                self_mask=SelfMaskConfig(enabled=self._lidar_self_mask),
-            )
+            return "pcap"
+        raw = self._lidar_source or "auto"
+        mode = str(raw).strip().lower()
+        if mode in ("ros", "rslidar", "rslidar_points"):
+            return "ros"
+        if mode in ("udp", "msop"):
+            return "udp"
+        return "auto"
+
+    def _lidar_source_name(self) -> str:
+        lidar = self._lidar
+        name = getattr(lidar, "source", None)
+        if name:
+            return str(name)
+        return "pcap" if self._lidar_pcap else "udp"
+
+    def _ros_cloud_kwargs(self) -> dict:
+        extra = float(os.environ.get("BUNKER_LIDAR_ROS_YAW_DEG") or 0.0)
+        height = self._lidar_height_m if self._lidar_height_m > 0 else DEFAULT_HEIGHT_M
+        return {
+            "height_m": height,
+            "extra_yaw_deg": extra,
+            "mount_yaw_deg": self._lidar_mount_yaw_deg,
+            "pitch_deg": self._lidar_pitch_deg,
+            "lidar_height_m": 0.0,
+            "self_mask": SelfMaskConfig(enabled=self._lidar_self_mask),
+        }
+
+    def _build_udp_lidar(self):
         return AiryLidar(
             host=self._lidar_host,
             port=self._lidar_port,
@@ -1208,6 +1452,26 @@ class BunkerMiniAgent:
             self_mask=SelfMaskConfig(enabled=self._lidar_self_mask),
             attitude_source=self._attitude_source,
         )
+
+    def _build_lidar(self):
+        """Construct the LiDAR source: PCAP, UDP MSOP, or /rslidar_points."""
+        mode = self._lidar_source_mode()
+        if mode == "pcap":
+            return PcapReplaySource(
+                self._lidar_pcap,
+                mount_yaw_deg=self._lidar_mount_yaw_deg,
+                pitch_deg=self._lidar_pitch_deg,
+                lidar_height_m=self._lidar_height_m,
+                self_mask=SelfMaskConfig(enabled=self._lidar_self_mask),
+            )
+        if mode == "ros" or (mode == "auto" and msop_udp_bound(self._lidar_port)):
+            if mode == "auto":
+                logger.info(
+                    "MSOP UDP %s 已被占用，雷达改订 /rslidar_points（不抢端口）",
+                    self._lidar_port,
+                )
+            return RslidarCloudSource(**self._ros_cloud_kwargs())
+        return self._build_udp_lidar()
 
     def _start_lidar(self) -> bool:
         """(Re)create and start the LiDAR stack. Returns True when online.
@@ -1230,32 +1494,52 @@ class BunkerMiniAgent:
             lidar = self._build_lidar()
             lidar.start()
         except (LidarError, PcapError) as exc:
-            logger.warning("%s — 避障降级为无传感器模式", exc)
-            self._send_event("fault", f"雷达启动失败: {exc}")
-            return False
+            mode = self._lidar_source_mode()
+            can_fallback = (
+                mode == "auto"
+                and not self._lidar_pcap
+                and "无法绑定雷达 UDP" in str(exc)
+            )
+            if can_fallback:
+                logger.warning("%s — 改订 /rslidar_points", exc)
+                try:
+                    lidar = RslidarCloudSource(**self._ros_cloud_kwargs())
+                    lidar.start()
+                except LidarError as exc2:
+                    logger.warning("%s — 避障降级为无传感器模式", exc2)
+                    self._send_event("fault", f"雷达启动失败: {exc2}")
+                    return False
+            else:
+                logger.warning("%s — 避障降级为无传感器模式", exc)
+                self._send_event("fault", f"雷达启动失败: {exc}")
+                return False
 
         self._lidar = lidar
-        # fail-safe：雷达在栈中即 require_sensor=True —— 中途掉线立即停车并
-        # 上报 obstacle 事件；只有 lidar off / --no-lidar 才用透传守卫。
+        # fail-safe：显式打开的雷达栈掉线必停；--no-lidar 被动订阅在首帧前透传。
+        require_sensor = True
+        if self._lidar_passive and not self._lidar_failsafe_armed:
+            require_sensor = False
         self._guard = ObstacleGuard(
             lidar,
-            ObstaclePolicy(step_limit_m=self._step_limit_m),
-            require_sensor=True,
+            make_obstacle_policy(step_limit_m=self._step_limit_m),
+            require_sensor=require_sensor,
         )
         self._guard.on_blocked(self._on_obstacle_blocked)
         self._detector = ReflectivityDetector(mount_yaw_deg=self._lidar_mount_yaw_deg)
         self._approach = ApproachController(ApproachConfig())
-        # 轻量扫描匹配（本机漂移闭环）：建图前界住里程漂移，pose_source
-        # 接入绝对位姿后自动退居兜底。
+        # 被动 ROS 订阅仍建 matcher：出发系前往只修航向。空闲时只观察不改 XY。
         self._scan_matcher = (
             ScanMatcher(config=ScanMatchConfig())
-            if self._scan_match_enabled else None
+            if self._scan_match_enabled
+            else None
         )
         self._scan_match_last_yaw = None
-        # 伪地图与全局规划器先建好，供 patrol 探索记忆 / goto 规划复用
+        # 伪地图与全局规划器先建好，供 patrol 探索记忆 / goto 规划复用。
+        # 任务 goto 用默认 TTL（约 5 s），走动的人/挪过的椅会从格子里消失；
+        # 长时间溶洞建图（auto_mission）才关掉衰减做累计。map_upload 的格仍永久。
         self._occ_grid = OccupancyGrid()
-        # 建图模式：关闭 5s TTL，走过的区域持续累计进同一张栅格
-        self._occ_grid.set_ttl(0)
+        if self._auto_mission:
+            self._occ_grid.set_ttl(0)
         self._planner = GlobalPlanner(self._occ_grid)
         # 导航器必须先于 patrol 创建：探路记忆 / frontier 依赖 pose_fn。
         # 旧实现在首次启动时 nav 仍为 None，pose_fn 被设成永久空 → 探索记忆失效。
@@ -1296,6 +1580,9 @@ class BunkerMiniAgent:
             self._lidar_mount_yaw_deg,
             self._wheelbase_m,
         )
+        player = self._player
+        if player is not None:
+            player._velocity_guard = self._velocity_guard
         self._maybe_start_map_view()
         return True
 
@@ -1396,6 +1683,7 @@ class BunkerMiniAgent:
         allowed = {
             "estop", "cancel", "query", "grasp_done",
             "lidar_status", "lidar_map", "point_cloud", "pc_stream",
+            "autonav_map", "autonav_cancel",
         }
         return action not in allowed
 
@@ -1448,11 +1736,12 @@ class BunkerMiniAgent:
         nav = self._navigator
         if nav is not None and nav.is_navigating:
             nav.stop()
+        self._clear_autonav()
         # 关闭雷达 = 显式降级为无传感器模式：换透传守卫（require_sensor=False），
         # 否则上一步创建的 fail-safe 守卫会把所有运动通路锁死。
         self._guard = ObstacleGuard(
             None,
-            ObstaclePolicy(step_limit_m=self._step_limit_m),
+            make_obstacle_policy(step_limit_m=self._step_limit_m),
             require_sensor=False,
         )
         if nav is not None:
@@ -1464,6 +1753,10 @@ class BunkerMiniAgent:
         self._scan_match_last_yaw = None
         self._occ_grid = None
         self._planner = None
+        self._lidar_failsafe_armed = False
+        player = self._player
+        if player is not None:
+            player._velocity_guard = None
 
     # ------------------------------------------------------------------
     # WebSocket lifecycle
@@ -1802,27 +2095,50 @@ class BunkerMiniAgent:
             return self._ws
 
     def _emit_tcp(self, msg: dict) -> None:
-        """把状态/事件推给本地 TCP 控制台（点云大包不下发）。"""
+        """把状态/事件推给本地 TCP 控制台。
+
+        点云/占用格默认不下完整大包（会撑破 60KB 帧、网页也画不了）。
+        网页需要画面时改为精简 payload：短 ``msg`` + 可绘制的 ``data``。
+        """
         srv = self._teleop_tcp
         if srv is None or srv.clients <= 0:
             return
         if msg.get("type") == "event":
-            ev = ""
             payload = msg.get("payload")
             if isinstance(payload, dict):
                 ev = str(payload.get("event") or "")
-            if ev in ("point_cloud",):
-                return
-            if ev == "lidar_map" and isinstance(payload, dict):
-                data = payload.get("data")
-                if isinstance(data, dict):
-                    slim = {
-                        k: data[k]
-                        for k in data
-                        if k not in ("cells", "free", "occupied", "blocked", "points")
-                    }
+                data = payload.get("data") if isinstance(payload.get("data"), dict) else None
+                if ev == "point_cloud" and data is None:
+                    return
+                if ev in ("point_cloud", "lidar_map", "autonav_map") and data is not None:
+                    slim = fit_tcp_visual(ev, data)
+                    short = (
+                        f"point_cloud n={slim.get('shown') or 0}"
+                        if ev == "point_cloud"
+                        else (
+                            "lidar_map occ="
+                            f"{slim.get('occupiedCells') or 0} blk="
+                            f"{slim.get('blockedCells') or 0}"
+                            if ev == "lidar_map"
+                            else (
+                                "autonav_map occ="
+                                f"{slim.get('occupiedCells') or 0}"
+                            )
+                        )
+                    )
                     msg = dict(msg)
-                    msg["payload"] = dict(payload, data=slim)
+                    msg["payload"] = {
+                        "event": ev,
+                        "msg": short,
+                        "data": slim,
+                    }
+                elif ev == "lidar_status" and data is not None:
+                    msg = dict(msg)
+                    msg["payload"] = {
+                        "event": ev,
+                        "msg": "lidar_status",
+                        "data": data,
+                    }
         try:
             srv.push_event(msg)
         except Exception:
@@ -1846,6 +2162,23 @@ class BunkerMiniAgent:
         _spawn("_state_thread", self._state_report_loop, "agent-state")
         _spawn("_loc_thread", self._localization_loop, "agent-loc")
         _spawn("_watchdog_thread", self._watchdog_loop, "agent-watchdog")
+        self._maybe_start_tf_pose()
+
+    def _maybe_start_tf_pose(self) -> None:
+        """SSH 已开 MOLA 定位时，从 TF 读 map→base_link。网页不启停 ROS。"""
+        if not self._tf_pose_owned:
+            return
+        src = self._pose_source
+        if src is None or not isinstance(src, TfPoseSource):
+            return
+        if os.environ.get("BUNKER_TF_POSE", "1").strip().lower() in (
+            "0", "false", "no", "off",
+        ):
+            return
+        try:
+            src.start()
+        except Exception:
+            logger.warning("TF PoseSource 未启动（定位未开时这是正常的）", exc_info=True)
 
     def _stop_background_tasks(self, *, cloud_only: bool = False) -> None:
         """Join background threads.
@@ -1928,6 +2261,10 @@ class BunkerMiniAgent:
                     self._update_occupancy_grid(lidar, self._navigator)
                 except Exception:
                     logger.debug("occupancy tick failed", exc_info=True)
+            try:
+                self._maybe_arm_lidar_failsafe()
+            except Exception:
+                logger.debug("lidar failsafe arm failed", exc_info=True)
             nav = self._navigator
             if nav is not None and nav.is_navigating:
                 now = time.monotonic()
@@ -2253,6 +2590,7 @@ class BunkerMiniAgent:
             if nav is not None and nav.is_navigating:
                 nav.stop()
                 logger.info("Move command cancelled ongoing navigation")
+            self._clear_autonav()
             # 手动 move 取消正在进行的 find_object；无任务线程时跳过
             # （kb 刷新约 5 Hz，不必每次 join/清 TTL）。
             mt = self._mission_thread
@@ -2366,6 +2704,7 @@ class BunkerMiniAgent:
             if nav is not None and nav.is_navigating:
                 nav.stop()
             self._stop_existing_mission("estop")
+            self._clear_autonav()
             self._pending_command = None
             self._move_deadline = None
             self._controller.stop_motion()
@@ -2435,8 +2774,82 @@ class BunkerMiniAgent:
         elif action == "grasp_done":
             self._handle_grasp_done(cmd)
 
+        elif action == "set_wheelbase":
+            self._handle_set_wheelbase(cmd)
+
+        elif action == "calibrate_wheelbase":
+            self._handle_calibrate_wheelbase(cmd)
+
+        elif action == "autonav_goto":
+            self._handle_autonav_goto(cmd)
+
+        elif action == "autonav_select_map":
+            self._handle_autonav_select_map(cmd)
+
+        elif action == "autonav_map":
+            self._handle_autonav_map(cmd)
+
+        elif action == "autonav_cancel":
+            self._handle_autonav_cancel(cmd)
+
         else:
             logger.warning("Unknown action: %s", action)
+
+    def _ensure_navigator(self) -> Optional[Navigator]:
+        """保证有里程系导航器：--no-lidar 时也要能记起点、倒放后精停。"""
+        if self._navigator is not None:
+            return self._navigator
+        ctrl = self._controller
+        if ctrl is None:
+            return None
+        guard = self._guard
+        if guard is None:
+            guard = ObstacleGuard(
+                None,
+                make_obstacle_policy(step_limit_m=self._step_limit_m),
+                require_sensor=False,
+            )
+            self._guard = guard
+        self._navigator = Navigator(
+            ctrl,
+            guard,
+            wheelbase_m=self._wheelbase_m,
+            drive=self._drive,
+        )
+        if not self._odometer_wired:
+            on_odo = getattr(ctrl, "on_odometer", None)
+            if callable(on_odo):
+                on_odo(self._on_odometer_feedback)
+                self._odometer_wired = True
+        logger.info("Navigator ready (odometry frame; LiDAR optional)")
+        return self._navigator
+
+    def _chassis_is_idle(self) -> bool:
+        ctrl = self._controller
+        if ctrl is None:
+            return True
+        motion = getattr(ctrl, "latest_motion", None)
+        if motion is None:
+            return True
+        v = float(getattr(motion, "linear_velocity_m_s", 0.0) or 0.0)
+        w = float(getattr(motion, "angular_velocity_rad_s", 0.0) or 0.0)
+        return abs(v) < 0.015 and abs(w) < 0.03
+
+    def _wait_chassis_idle(self, timeout_s: float) -> bool:
+        deadline = time.monotonic() + max(0.0, timeout_s)
+        while True:
+            if self._chassis_is_idle():
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.05)
+
+    def _snapshot_nav_pose(self) -> Optional[tuple[float, float, float]]:
+        nav = self._ensure_navigator()
+        if nav is None:
+            return None
+        p = nav.pose
+        return (float(p.x), float(p.y), float(p.yaw_deg))
 
     def _handle_track_record(self, cmd: Command) -> None:
         """Start or stop trajectory recording."""
@@ -2445,8 +2858,6 @@ class BunkerMiniAgent:
             return
 
         if cmd.name:
-            # Names come from the cloud — keep them filesystem-safe
-            # (strip path separators / illegal characters).
             name = sanitize_track_name(cmd.name)
             if recorder.is_recording:
                 logger.warning("Track record: already recording '%s', ignoring start", name)
@@ -2455,46 +2866,86 @@ class BunkerMiniAgent:
                     f"Track record: already recording, ignored start '{name}'",
                 )
                 return
+            if not self._wait_chassis_idle(1.2):
+                self._send_event(
+                    "fault",
+                    "Track record: 车还在动。松 WASD 停稳后再点开始录制"
+                    "（起步点按会写进轨迹，回原点会偏）",
+                )
+                return
+            live_src = ""
+            ctrl = self._controller
+            if ctrl is not None:
+                src = getattr(ctrl, "odometer_source", None)
+                live_src = str(src() if callable(src) else src or "")
+            if live_src == "synthetic":
+                self._send_event(
+                    "fault",
+                    "Track record: 当前里程是 synthetic（多半在打遥控器）。"
+                    "只用网页 WASD / CAN 指令模式录，否则不能当回原点用",
+                )
+                return
+            self._pending_record_start_pose = self._snapshot_nav_pose()
             recorder.start(name)
-            logger.info(
-                "Track recording started: '%s' — recording only samples, it does "
-                "NOT drive the chassis; drive it with move/remote to record a path",
-                name,
+            sp = self._pending_record_start_pose
+            pose_txt = (
+                f" 起点({sp[0]:.2f},{sp[1]:.2f},{sp[2]:.1f}°)"
+                if sp is not None else " 起点位姿未记下（无导航器）"
             )
-            self._send_event("track_record", f"Recording started: {name}")
+            src_txt = f" 里程={live_src or 'unknown'}"
+            logger.info(
+                "Track recording started: '%s'%s%s — drive with WASD/CAN only",
+                name, pose_txt, src_txt,
+            )
+            self._send_event(
+                "track_record",
+                f"Recording started: {name}{pose_txt}{src_txt}。"
+                "停稳再保存；少原地搓履带",
+            )
         else:
             if not recorder.is_recording:
                 logger.warning("Track record: not recording, ignoring stop")
                 self._send_event("fault", "Track record: not recording")
                 return
+            if not self._chassis_is_idle():
+                if self._controller is not None:
+                    self._controller.stop_motion()
+                if not self._wait_chassis_idle(2.5):
+                    logger.warning("Track record stop: still moving after wait, saving anyway")
             try:
                 track = recorder.stop()
+                sp = self._pending_record_start_pose
+                self._pending_record_start_pose = None
+                if sp is not None:
+                    track.start_x, track.start_y, track.start_yaw_deg = sp
                 player = self._player
                 if player:
-                    # 本段录制刚停：必须按原名落盘。若改成 r1_时间戳，
-                    # 云端 B 仍 follow r1，会放旧文件或找不到新轨迹。
-                    # 覆盖流程已先 track_delete；同名覆盖是预期行为。
                     player.save_track(track)
 
-                # Tell the cloud whether the recording actually contains
-                # movement — a saved all-zero track is a useless/dangerous
-                # replay target and the operator should know immediately.
+                quality = track_origin_quality(track)
                 has_motion = any(w.v != 0.0 or w.w != 0.0 for w in track.waypoints)
-                has_odo = any(
-                    w.left_mm != track.waypoints[0].left_mm
-                    or w.right_mm != track.waypoints[0].right_mm
-                    for w in track.waypoints[1:]
-                )
+                has_odo = bool(quality["has_odo"])
                 if not has_motion and not has_odo:
                     self._send_event(
                         "track_record",
                         f"Track '{track.name}' saved but has NO movement data — "
                         "the chassis did not move during recording. Drive it next time.",
                     )
-                else:
+                elif not quality["ok"] or quality["odometer_source"] not in ("real", "fused"):
                     self._send_event(
                         "track_record",
-                        f"Track saved: {track.name} ({track.total_duration_s:.1f}s, {len(track.waypoints)} waypoints)",
+                        f"Track saved: {track.name} ({track.total_duration_s:.1f}s, "
+                        f"{len(track.waypoints)} waypoints, "
+                        f"odometer={quality['odometer_source']}) — "
+                        "没有可靠 0x311，不能当「必须回原点」用。请用网页 WASD 停稳后重录",
+                    )
+                else:
+                    dock = "有起点精停" if quality["dock_ok"] else "无起点位姿，倒放后不能精停"
+                    self._send_event(
+                        "track_record",
+                        f"Track saved: {track.name} ({track.total_duration_s:.1f}s, "
+                        f"{len(track.waypoints)} waypoints, "
+                        f"odometer={quality['odometer_source']}, {dock})",
                     )
             except RuntimeError as e:
                 logger.error("Track record stop failed: %s", e)
@@ -2504,6 +2955,10 @@ class BunkerMiniAgent:
         """Play back a previously recorded trajectory."""
         player = self._player
         if player is None or self._controller is None:
+            return
+
+        if self._autonav_active:
+            self._send_event("fault", "track_follow: 自动导航进行中，回放已拒绝")
             return
 
         if not cmd.track_id:
@@ -2524,7 +2979,7 @@ class BunkerMiniAgent:
             player.stop()
 
         try:
-            track = player.load_track(cmd.track_id)
+            origin_track = player.load_track(cmd.track_id)
         except FileNotFoundError as e:
             logger.error("Track follow: %s", e)
             self._send_event("fault", f"Track not found: {cmd.track_id}")
@@ -2533,6 +2988,22 @@ class BunkerMiniAgent:
             logger.error("Track follow: %s", e)
             self._send_event("fault", f"Track corrupt: {cmd.track_id}")
             return
+
+        quality = track_origin_quality(origin_track)
+        if cmd.reverse:
+            if not quality["has_odo"] or quality["odometer_source"] == "synthetic":
+                self._send_event(
+                    "fault",
+                    f"Track follow reverse: '{origin_track.name}' 没有可靠 0x311"
+                    f"（odometer={quality['odometer_source']}），不能倒放回原点。"
+                    "请用网页 WASD 停稳后重录",
+                )
+                return
+            if quality["odometer_source"] not in ("real", "fused"):
+                logger.warning(
+                    "Track follow reverse: '%s' odometer_source=%s — wheel clone only",
+                    origin_track.name, quality["odometer_source"],
+                )
 
         # A manual replay supersedes any running transport task.
         self._cancel_task("track_follow")
@@ -2554,53 +3025,52 @@ class BunkerMiniAgent:
             self._controller.stop_motion()
 
         direction = "reverse" if cmd.reverse else "forward"
+        play_track = origin_track.reversed() if cmd.reverse else origin_track
         if cmd.reverse:
-            track = track.reversed()
-            logger.info("Track follow: replaying '%s' in REVERSE (back to start)", track.name)
+            logger.info("Track follow: replaying '%s' in REVERSE (back to start)", play_track.name)
         else:
-            logger.info("Track follow: replaying '%s'", track.name)
-        self._send_event("track_follow", f"Replaying: {track.name} ({direction})")
+            logger.info("Track follow: replaying '%s'", play_track.name)
+        self._send_event("track_follow", f"Replaying: {play_track.name} ({direction})")
         # 已录路径是固定轮迹（B 回程尤其是「沿原路回家」死命令）：
         # 雷达守卫不得限速/急停，否则车头近处椅腿会把回程第一拍掐死。
+        # 被挡则中止并诚实上报，不再 skip 航点后声称回到起点。
         player.play_async(
-            track,
-            on_complete=lambda complete: self._on_track_complete(direction, complete),
+            play_track,
+            on_complete=lambda complete, d=direction, src=origin_track:
+                self._on_track_complete(d, complete, src),
             reverse=bool(cmd.reverse),
             bypass_guard=True,
         )
 
-    def _on_track_complete(self, direction: str, complete: bool) -> None:
-        """Called by TrackPlayer when replay finishes — notify the cloud.
+    def _on_track_complete(
+        self,
+        direction: str,
+        complete: bool,
+        origin_track: Optional[Track] = None,
+    ) -> None:
+        """回放结束：倒放后尽量用录制起点做里程系精停；不把残缺回放说成已回原点。"""
+        player = self._player
+        had_odo = bool(player and player.last_playback_had_odo)
+        stalled = int(player.last_playback_stalled_wps) if player else 0
+        time_fb = bool(player and player.last_playback_time_fallback)
+        replay = {
+            "direction": direction,
+            "complete": bool(complete),
+            "hadOdo": had_odo,
+            "timeFallback": time_fb or (complete and not had_odo),
+            "stalledWps": stalled,
+            "docked": False,
+            "dockErrM": None,
+            "dockErrYawDeg": None,
+        }
 
-        无论回放是否完整都会上报 arrived（除非被显式 stop() 打断），否则
-        「回程中途卡住 → 云端收不到 arrived → 回程状态一直空等、终端卡死」。
-        complete=False 表示残缺/被避障中止的回放，文案里会明确说明。
-
-        里程缺失（时间回放）时，即使 complete=True 也**不能**声称「已返回
-        起点」——时间回放没有位置反馈，小车不一定真的回到起点。文案会
-        明确标注 approximate，避免误导。
-        """
-        had_odo = bool(self._player and self._player.last_playback_had_odo)
-        if direction == "reverse":
+        if direction != "reverse":
+            self._last_replay = replay
             if not complete:
                 self._send_event(
                     EventType.ARRIVED,
-                    "Reverse replay interrupted — did not fully return to start",
-                )
-            elif not had_odo:
-                self._send_event(
-                    EventType.ARRIVED,
-                    "Reverse replay finished by time-based fallback (odometer "
-                    "unavailable) — position approximate, may not be exactly "
-                    "back at start",
-                )
-            else:
-                self._send_event(EventType.ARRIVED, "Reverse replay completed — back at start")
-        else:
-            if not complete:
-                self._send_event(
-                    EventType.ARRIVED,
-                    "Track replay interrupted — did not fully cover the route",
+                    "Track replay interrupted — did not fully cover the route"
+                    + (f" ({stalled} waypoints skipped/stalled)" if stalled else ""),
                 )
             elif not had_odo:
                 self._send_event(
@@ -2610,6 +3080,155 @@ class BunkerMiniAgent:
                 )
             else:
                 self._send_event(EventType.ARRIVED, "Track replay completed")
+            return
+
+        if not complete:
+            replay["timeFallback"] = time_fb
+            self._last_replay = replay
+            extra = f"（跳过/未覆盖 {stalled} 个航点）" if stalled else ""
+            self._send_event(
+                EventType.ARRIVED,
+                "Reverse replay interrupted — did not fully return to start" + extra,
+            )
+            return
+
+        if not had_odo:
+            replay["timeFallback"] = True
+            self._last_replay = replay
+            self._send_event(
+                EventType.ARRIVED,
+                "Reverse replay finished by time-based fallback (odometer "
+                "unavailable) — position approximate, may not be exactly "
+                "back at start",
+            )
+            return
+
+        if origin_track is None:
+            self._last_replay = replay
+            self._send_event(
+                EventType.ARRIVED,
+                "Reverse replay completed — wheel clone only",
+            )
+            return
+
+        self._maybe_dock_after_reverse(origin_track, replay, force=True)
+
+    def _maybe_dock_after_reverse(
+        self,
+        track: Track,
+        replay: dict[str, Any],
+        *,
+        force: bool,
+    ) -> None:
+        """倒放粗回之后，用录制起点 (x,y,yaw) 做里程系 goto 精停。"""
+        quality = track_origin_quality(track)
+        if not quality["has_start_pose"]:
+            self._last_replay = replay
+            self._send_event(
+                EventType.ARRIVED,
+                "Reverse replay completed — back at start (wheel clone, "
+                "no recorded start pose to dock)",
+            )
+            return
+        nav = self._ensure_navigator()
+        gx = float(track.start_x)  # type: ignore[arg-type]
+        gy = float(track.start_y)  # type: ignore[arg-type]
+        dist = None
+        if nav is not None:
+            dist = math.hypot(nav.pose.x - gx, nav.pose.y - gy)
+        if not force and (dist is None or dist > 1.5):
+            self._last_replay = replay
+            return
+        dock = self._dock_to_recorded_start(track)
+        replay["docked"] = bool(dock.get("arrived"))
+        replay["dockErrM"] = dock.get("errM")
+        replay["dockErrYawDeg"] = dock.get("errYawDeg")
+        replay["dockReason"] = dock.get("reason") or ""
+        self._last_replay = replay
+        err = dock.get("errM")
+        yaw = dock.get("errYawDeg")
+        if dock.get("arrived"):
+            self._send_event(
+                EventType.ARRIVED,
+                "Reverse replay completed — docked at recorded start"
+                + (f" (residual {err:.2f} m, {yaw:.0f}°)" if err is not None and yaw is not None else ""),
+            )
+            return
+        if err is not None:
+            self._send_event(
+                EventType.ARRIVED,
+                "Reverse replay finished — dock residual "
+                f"{err:.2f} m, not on start"
+                + (f"（{dock.get('reason')}）" if dock.get("reason") else ""),
+            )
+            return
+        self._send_event(
+            EventType.ARRIVED,
+            "Reverse replay completed — back at start (dock skipped: "
+            f"{dock.get('reason') or 'unknown'})",
+        )
+
+    def _dock_to_recorded_start(self, track: Track) -> dict[str, Any]:
+        out: dict[str, Any] = {
+            "attempted": False, "arrived": False,
+            "errM": None, "errYawDeg": None, "reason": "",
+        }
+        if track.start_x is None or track.start_y is None:
+            out["reason"] = "no_start_pose"
+            return out
+        nav = self._ensure_navigator()
+        if nav is None:
+            out["reason"] = "no_navigator"
+            return out
+        gx = float(track.start_x)
+        gy = float(track.start_y)
+        gyaw = None if track.start_yaw_deg is None else math.radians(float(track.start_yaw_deg))
+        pose = nav.pose
+        out["errM"] = round(math.hypot(pose.x - gx, pose.y - gy), 3)
+        if nav.is_navigating:
+            nav.stop()
+        arrived = threading.Event()
+        abort: list[str] = [""]
+        waypoints = None
+        if self._planner is not None:
+            try:
+                waypoints = self._plan_waypoints(gx, gy)
+            except Exception:
+                waypoints = None
+        ok = nav.goto(
+            gx, gy,
+            goal_yaw=gyaw,
+            speed=0.12,
+            waypoints=waypoints,
+            on_arrived=arrived.set,
+            on_abort=lambda r: abort.__setitem__(0, r or "abort"),
+        )
+        if not ok:
+            out["reason"] = "goto_busy"
+            return out
+        out["attempted"] = True
+        deadline = time.monotonic() + 20.0
+        while time.monotonic() < deadline:
+            if arrived.is_set() or abort[0] or self._stop_event.is_set():
+                break
+            if not nav.is_navigating:
+                time.sleep(0.05)
+                if not nav.is_navigating:
+                    break
+            time.sleep(0.05)
+        pose = nav.pose
+        dist = math.hypot(pose.x - gx, pose.y - gy)
+        dyaw = 0.0
+        if gyaw is not None:
+            dyaw = abs(_wrap_angle_rad(gyaw - pose.yaw)) * 180.0 / math.pi
+        out["errM"] = round(dist, 3)
+        out["errYawDeg"] = round(dyaw, 1)
+        out["arrived"] = bool(arrived.is_set() or (dist <= 0.12 and dyaw <= 8.0))
+        if abort[0]:
+            out["reason"] = abort[0]
+        elif not out["arrived"]:
+            out["reason"] = "dock_miss"
+        return out
 
     def _handle_track_delete(self, cmd: Command) -> None:
         """Delete a recorded track file (manage multiple 轨迹克隆 recordings)."""
@@ -2683,27 +3302,40 @@ class BunkerMiniAgent:
         :class:`MapAlignment.map_to_odom` 换算回里程系后覆盖 navigator 位姿
         （内部仍统一里程系）。建图前无 pose_source 时，退化为用自身雷达做
         轻量扫描匹配（:meth:`_scan_match_tick`）界住漂移。
+        出发系 / 现场图前往不吃 TF；默认可把扫描匹配只融进航向。
         """
         src = self._pose_source
         nav = self._navigator
         if nav is None:
+            return
+        # 出发系 / 现场图前往：不吃地图 TF。默认可选扫描匹配只修航向，XY 仍是轮式原点。
+        if self._autonav_active and self._autonav_is_start_frame():
+            if self._autonav_yaw_match:
+                self._scan_match_tick(yaw_only=True)
+            self._sync_autonav_flag()
             return
         if src is not None:
             try:
                 obs = src.get_pose()
             except Exception:
                 logger.debug("pose_source.get_pose failed", exc_info=True)
-                return
+                obs = None
+            parsed: Optional[tuple[float, float, float]] = None
             if obs is not None:
                 try:
-                    x, y, yaw_deg = obs
-                except (TypeError, ValueError):
+                    x, y, yaw_deg = float(obs[0]), float(obs[1]), float(obs[2])
+                except (TypeError, ValueError, IndexError):
                     logger.warning("pose_source 返回格式非法，应为 (x, y, yaw_deg)")
-                    return
+                else:
+                    if math.isfinite(x) and math.isfinite(y) and math.isfinite(yaw_deg):
+                        parsed = (x, y, yaw_deg)
+            if parsed is not None:
+                x, y, yaw_deg = parsed
                 before = nav.pose
                 xo, yo, yoaw = self._map_alignment.map_to_odom(x, y, yaw_deg)
+                jump = math.hypot(xo - before.x, yo - before.y)
+                dyaw = abs(_wrap_angle_rad(math.radians(yoaw) - before.yaw))
                 nav.apply_external_pose(xo, yo, yoaw)
-                # 定位健康度：绝对位姿源（SLAM/视觉）生效，记录本次修正量
                 self._loc_source = "external"
                 self._loc_last_corr = {
                     "dx": round(xo - before.x, 3),
@@ -2711,11 +3343,34 @@ class BunkerMiniAgent:
                     "dyawDeg": round(_wrap_deg(yoaw - math.degrees(before.yaw)), 2),
                     "at": time.monotonic(),
                 }
+                self._autonav_loc_miss = 0
+                # 首次锁上或大跳变：旧 occupancy 还在跳变前的轮式里程计系。
+                if jump > 0.4 or dyaw > 0.26:
+                    self._reset_loc_occupancy()
+                self._sync_autonav_flag()
                 return
-        # 外部绝对位姿暂不可用 → 本机轻量扫描匹配兜底（建图前漂移闭环）
+            # TF 无有效位姿：不得把 _loc_source 卡在 external。
+            if self._loc_source == "external":
+                self._loc_source = "odom"
+            if self._autonav_active and self._autonav_frame == "map":
+                self._autonav_loc_miss += 1
+                if self._autonav_loc_miss >= 8:
+                    logger.error("自动导航中断：定位丢失")
+                    self._send_event("fault", "自动导航中断：定位丢失")
+                    if nav.is_navigating:
+                        nav.stop()
+                    ctrl = self._controller
+                    if ctrl is not None:
+                        ctrl.stop_motion()
+                    self._clear_autonav()
+                    return
+                self._sync_autonav_flag()
+                return
+            self._autonav_loc_miss = 0
         self._scan_match_tick()
+        self._sync_autonav_flag()
 
-    def _scan_match_tick(self) -> None:
+    def _scan_match_tick(self, yaw_only: bool = False) -> None:
         """轻量扫描匹配修正：把当前帧与自身参考地图对齐，界住里程漂移。
 
         顺序：**先匹配、后注册**（参考地图只含历史帧，避免当前帧自匹配
@@ -2723,6 +3378,7 @@ class BunkerMiniAgent:
           * 原地/快速旋转时不匹配（对称场景易误配）；
           * 只接受小窗口内的高分且优次分明结果；
           * 修正量按 ``blend`` 融合，单帧不突变。
+          * ``yaw_only``：出发系前往只融航向，不改轮式 XY。
         """
         matcher = self._scan_matcher
         nav = self._navigator
@@ -2737,6 +3393,9 @@ class BunkerMiniAgent:
         if not sectors:
             return
         pose = nav.pose
+        if not yaw_only and getattr(self, "_lidar_passive", False):
+            matcher.observe(sectors, pose.x, pose.y, pose.yaw_deg)
+            return
         # 只跳过猛打方向（约 120°/s @ 10Hz）。旧门槛 3° 绑在 1.5s 节拍上
         # 时，goto 每次转向都整拍跳过，匹配等于没跑。
         if self._scan_match_last_yaw is not None:
@@ -2751,7 +3410,24 @@ class BunkerMiniAgent:
             return
         dx, dy, dyaw_deg = corr
         blend = self._scan_match_blend
-        if blend > 0:
+        if blend > 0 and yaw_only:
+            if abs(dyaw_deg) >= 0.35:
+                nyaw = _wrap_angle_rad(pose.yaw + math.radians(dyaw_deg) * blend)
+                apply_yaw = getattr(nav, "apply_yaw_correction", None)
+                if callable(apply_yaw):
+                    apply_yaw(math.degrees(nyaw))
+                else:
+                    nav.apply_external_pose(pose.x, pose.y, math.degrees(nyaw))
+                self._loc_source = "yawmatch"
+                self._loc_last_corr = {
+                    "dx": 0.0,
+                    "dy": 0.0,
+                    "dyawDeg": round(dyaw_deg, 2),
+                    "at": time.monotonic(),
+                    "yawOnly": True,
+                }
+                logger.debug("scan match yaw-only: d%.1f° (xy locked)", dyaw_deg)
+        elif blend > 0:
             nx = pose.x + dx * blend
             ny = pose.y + dy * blend
             nyaw = _wrap_angle_rad(pose.yaw + math.radians(dyaw_deg) * blend)
@@ -2786,23 +3462,464 @@ class BunkerMiniAgent:
         与 move / 回放 / task 互斥；完成推 ``arrived`` 事件，因障碍长时间
         无法到达则推 ``auto_stop`` 事件。
         """
+        if self._autonav_active:
+            self._send_event(
+                "fault",
+                "goto: 自动导航进行中，任务页里程 goto 已拒绝。请先在自动导航页取消。",
+            )
+            return
+        self._run_goto(cmd, event="goto")
+
+    def _clear_autonav(self) -> None:
+        self._autonav_active = False
+        self._autonav_frame = "odom"
+        self._autonav_goal_map = None
+        self._autonav_started_at = 0.0
+        self._autonav_loc_miss = 0
+        self._autonav_saw_nav = False
+
+    def _sync_autonav_flag(self) -> None:
+        """导航已停但标志还在（WASD 漏清、回调丢失）时收回互斥。"""
+        if not self._autonav_active:
+            return
         nav = self._navigator
+        navigating = nav is not None and bool(getattr(nav, "is_navigating", False))
+        if navigating:
+            self._autonav_saw_nav = True
+            return
+        if not self._autonav_saw_nav:
+            started = self._autonav_started_at
+            if started and (time.monotonic() - started) < 2.0:
+                return
+        self._autonav_active = False
+        self._autonav_frame = "odom"
+        self._autonav_goal_map = None
+        self._autonav_started_at = 0.0
+        self._autonav_loc_miss = 0
+        self._autonav_saw_nav = False
+
+    def _reset_loc_occupancy(self) -> None:
+        if self._occ_grid is not None:
+            self._occ_grid.reset()
+        if self._planner is not None:
+            self._planner.reset_cache()
+        matcher = self._scan_matcher
+        if matcher is not None:
+            matcher.reset()
+
+    def _autonav_cmd_frame(self, cmd: Command) -> str:
+        raw = str(getattr(cmd, "frame", "") or "").strip().lower()
+        if raw in ("map", "slam", "world"):
+            return "map"
+        if raw in ("sketch", "occ", "pseudo", "live"):
+            return "sketch"
+        return "odom"
+
+    def _autonav_is_start_frame(self, frame: Optional[str] = None) -> bool:
+        """出发系与现场图都相对开机/重置原点，不走地图 TF。"""
+        f = (frame if frame is not None else self._autonav_frame) or "odom"
+        return f in ("odom", "sketch")
+
+    def _lidar_allows_open_loop_goto(self) -> bool:
+        """被动订点云尚未到达（或从未显式 lidar_on）时允许开环出发系前往。"""
+        lidar = self._lidar
+        if lidar is None:
+            return True
+        if getattr(lidar, "is_receiving", False):
+            return True
+        return bool(self._lidar_passive) and not self._lidar_failsafe_armed
+
+    def _maybe_arm_lidar_failsafe(self) -> None:
+        lidar = self._lidar
+        if lidar is None or not getattr(lidar, "is_receiving", False):
+            return
+        if self._lidar_failsafe_armed:
+            return
+        self._lidar_failsafe_armed = True
+        guard = self._guard
+        if guard is not None:
+            setter = getattr(guard, "set_require_sensor", None)
+            if callable(setter):
+                setter(True)
+            else:
+                guard._require_sensor = True
+        logger.info("近场点云已到达：此后雷达掉线将强制停车")
+
+    def _pose_source_snapshot(self) -> dict:
+        src = self._pose_source
+        if src is None:
+            return {"online": False, "hasMap": False, "locked": False, "bridge": False}
+        snap_fn = getattr(src, "snapshot", None)
+        if callable(snap_fn):
+            try:
+                snap = snap_fn() or {}
+            except Exception:
+                snap = {}
+            if isinstance(snap, dict):
+                return snap
+        pose = None
+        try:
+            pose = src.get_pose()
+        except Exception:
+            pose = None
+        return {
+            "online": pose is not None,
+            "hasMap": pose is not None,
+            "locked": pose is not None,
+            "bridge": False,
+            "x": None if pose is None else round(float(pose[0]), 3),
+            "y": None if pose is None else round(float(pose[1]), 3),
+            "yawDeg": None if pose is None else round(float(pose[2]), 2),
+        }
+
+    def _autonav_status(self) -> dict:
+        maps = qualified_catalog()
+        map_id = self._autonav_map_id or ""
+        snap = self._pose_source_snapshot()
+        loc_online = bool(snap.get("hasMap"))
+        pose = None
+        src = self._pose_source
+        if src is not None:
+            try:
+                pose = src.get_pose()
+            except Exception:
+                pose = None
+        locked = pose is not None
+        qualified = bool(map_id) and is_qualified(map_id)
+        loc_ready = bool(qualified and loc_online and locked)
+        navigating = bool(self._autonav_active)
+        nav = self._navigator
+        if nav is not None:
+            navigating = navigating and bool(getattr(nav, "is_navigating", False))
+        if navigating:
+            stage = "navigating"
+        elif loc_ready:
+            stage = "ready"
+        elif not qualified:
+            stage = "no_map"
+        elif not loc_online:
+            stage = "loc_offline"
+        else:
+            stage = "not_locked"
+        hint = {
+            "no_map": "先在 maps/qualified.json 勾选合格新图（不要用 lab/lab2），再在本页选择。",
+            "loc_offline": "在工控机 SSH 运行 maps/start_mola_localization.sh <mapId>；网页不启停 ROS。",
+            "not_locked": "定位进程在线但未跟踪。在 RViz 给 2D Pose Estimate，等来源变成 external。",
+            "ready": "定位已锁定，可在图上点目标或填地图坐标。",
+            "navigating": "自动导航行驶中。任务页 goto / 探路 / 回放已互斥。",
+        }.get(stage, "")
+        pose_out = None
+        if pose is not None:
+            pose_out = {
+                "x": round(float(pose[0]), 3),
+                "y": round(float(pose[1]), 3),
+                "yawDeg": round(float(pose[2]), 2),
+            }
+        odom_pose = None
+        if nav is not None:
+            p = nav.pose
+            odom_pose = {
+                "x": round(float(p.x), 3),
+                "y": round(float(p.y), 3),
+                "yawDeg": round(float(p.yaw_deg), 2),
+            }
+        lidar = self._lidar
+        lidar_rx = bool(lidar is not None and getattr(lidar, "is_receiving", False))
+        start_ready = nav is not None
+        start_hint = (
+            "出发系：相对启动/重置原点。赛题管道入口坐标走这条，不需要合格图。"
+            + (" 近场点云在线，前往会限速/停车。" if lidar_rx else " 尚无 /rslidar_points，前往开环，WASD 可接管。")
+            + (" 长距离会用雷达只修航向，XY 仍是轮式原点。" if (self._autonav_yaw_match and lidar_rx) else "")
+        )
+        sketch_hint = (
+            "现场图：坐标仍是出发系。画布画雷达占用格，可点击选目标；格子大约几秒会过期，不是建图。"
+            + (" 近场点云在线。" if lidar_rx else " 没有点云时格子是空的，前往仍是直线。")
+        )
+        if navigating:
+            if self._autonav_frame == "odom":
+                hint = "出发系行驶中。任务页 goto / 探路 / 回放已互斥。"
+            elif self._autonav_frame == "sketch":
+                hint = "现场图行驶中。坐标是出发系；画布格子会过期，不是建图。"
+        elif start_ready and not loc_ready:
+            hint = start_hint + " 地图系仍要合格图 + TF 锁定。"
+        return {
+            "stage": stage,
+            "mapId": map_id or None,
+            "locReady": loc_ready,
+            "locOnline": loc_online,
+            "startReady": start_ready,
+            "poseSource": "external" if locked else self._loc_source,
+            "pose": pose_out,
+            "odomPose": odom_pose,
+            "tf": snap,
+            "maps": maps,
+            "hint": hint,
+            "sshLoc": "maps/start_mola_localization.sh " + (map_id or "<mapId>"),
+            "navFrame": self._autonav_frame if self._autonav_active else None,
+            "lidarReceiving": lidar_rx,
+            "lidarSource": self._lidar_source_name() if lidar is not None else "none",
+            "lidarPassive": bool(self._lidar_passive),
+            "startHint": start_hint,
+            "sketchHint": sketch_hint,
+            "yawMatch": bool(self._autonav_yaw_match),
+            "vehicle": self._vehicle_envelope(),
+        }
+
+    def _task_autonomy_blocking_autonav(self) -> Optional[str]:
+        kind = (self._drive_status() or {}).get("kind") or "idle"
+        if kind == "mission":
+            return "任务页探路进行中，自动导航已拒绝"
+        if kind == "replay":
+            return "轨迹回放进行中，自动导航已拒绝"
+        if kind == "goto" and not self._autonav_active:
+            return "任务页里程 goto 进行中，自动导航已拒绝"
+        if kind == "move":
+            return "开环 move 进行中，自动导航已拒绝"
+        return None
+
+    def _handle_autonav_select_map(self, cmd: Command) -> None:
+        map_id = (cmd.name or "").strip()
+        if not map_id:
+            self._send_event("fault", "autonav_select_map: 缺少 mapId")
+            return
+        if self._autonav_active:
+            self._send_event("fault", "autonav_select_map: 自动导航行驶中不能换图")
+            return
+        if is_banned(map_id):
+            self._send_event(
+                "fault",
+                f"autonav_select_map: 拒绝 '{map_id}'（lab/lab2 不能当定位图）",
+            )
+            return
+        if not is_qualified(map_id):
+            self._send_event(
+                "fault",
+                f"autonav_select_map: '{map_id}' 未写入 maps/qualified.json，只记录验收合格的新图",
+            )
+            return
+        try:
+            self._autonav_map_id = save_selected_map_id(map_id)
+        except OSError as exc:
+            self._send_event("fault", f"autonav_select_map: 无法写入 selected_map.local: {exc}")
+            return
+        self._send_event(
+            "autonav_select_map",
+            f"已记录定位图 {self._autonav_map_id}（网页不启动 MOLA；SSH 再开定位脚本）",
+        )
+        self._push_state(force=True)
+
+    def _handle_autonav_cancel(self, cmd: Command) -> None:
+        nav = self._navigator
+        if nav is not None and nav.is_navigating:
+            nav.stop()
+        self._clear_autonav()
+        ctrl = self._controller
+        if ctrl is not None:
+            ctrl.stop_motion()
+        self._send_event("autonav_cancel", "已取消自动导航")
+        self._push_state(force=True)
+
+    def _vehicle_envelope(self) -> dict:
+        return {
+            "lengthM": VEHICLE_LENGTH_M,
+            "widthM": VEHICLE_WIDTH_M,
+            "heightM": VEHICLE_HEIGHT_M,
+        }
+
+    def _cloud_xy_odom(self, cap: int = 180) -> list[list[float]]:
+        """最新帧点云投影到出发系，只留可能碰到车体的高度。"""
+        lidar = self._lidar
+        nav = self._navigator
+        if lidar is None or nav is None or not getattr(lidar, "is_receiving", False):
+            return []
+        if not hasattr(lidar, "point_cloud"):
+            return []
+        try:
+            pc = lidar.point_cloud(max_points=max(cap * 4, 400), max_range_m=8.0)
+        except Exception:
+            return []
+        pts = pc.get("points") or []
+        pose = nav.pose
+        yaw = math.radians(pose.yaw_deg)
+        siny, cosy = math.sin(yaw), math.cos(yaw)
+        out: list[list[float]] = []
+        for p in pts:
+            if not isinstance(p, (list, tuple)) or len(p) < 3:
+                continue
+            try:
+                bx, by, bz = float(p[0]), float(p[1]), float(p[2])
+            except (TypeError, ValueError):
+                continue
+            if bz < 0.04 or bz > 0.55:
+                continue
+            wx = pose.x + bx * siny + by * cosy
+            wy = pose.y - bx * cosy + by * siny
+            out.append([round(wx, 2), round(wy, 2)])
+            if len(out) >= cap:
+                break
+        return out
+
+    def _handle_autonav_map(self, cmd: Command) -> None:
+        st = self._autonav_status()
+        map_id = st.get("mapId") or ""
+        layer = load_click_layer(map_id) if map_id else {
+            "ready": False, "reason": "no_map", "occupied": [],
+        }
+        lidar = self._lidar
+        nav = self._navigator
+        if lidar is not None and nav is not None:
+            try:
+                self._update_occupancy_grid(lidar, nav)
+            except Exception:
+                logger.debug("autonav occupancy tick failed", exc_info=True)
+        sketch = []
+        odom_occ: list[list[float]] = []
+        odom_blk: list[list[float]] = []
+        odom_free: list[list[float]] = []
+        resolution = 0.1
+        grid = self._occ_grid
+        if grid is not None:
+            resolution = float(getattr(grid, "resolution_m", 0.1) or 0.1)
+        if grid is not None and nav is not None:
+            try:
+                snap = grid.snapshot(
+                    nav.pose.x, nav.pose.y, nav.pose.yaw_deg,
+                    cap=400, include_free=True,
+                )
+                occ = snap.get("occupied") or []
+                blk = snap.get("blocked") or []
+                free = snap.get("free") or []
+                loc_ready = bool(st.get("locReady"))
+                for pt in occ:
+                    if not isinstance(pt, (list, tuple)) or len(pt) < 2:
+                        continue
+                    raw_x, raw_y = float(pt[0]), float(pt[1])
+                    odom_occ.append([round(raw_x, 2), round(raw_y, 2)])
+                    ox, oy = raw_x, raw_y
+                    if loc_ready:
+                        ox, oy, _ = self._map_alignment.odom_to_map(ox, oy, 0.0)
+                    sketch.append([round(ox, 2), round(oy, 2)])
+                for pt in blk:
+                    if not isinstance(pt, (list, tuple)) or len(pt) < 2:
+                        continue
+                    odom_blk.append([round(float(pt[0]), 2), round(float(pt[1]), 2)])
+                for pt in free:
+                    if not isinstance(pt, (list, tuple)) or len(pt) < 2:
+                        continue
+                    odom_free.append([round(float(pt[0]), 2), round(float(pt[1]), 2)])
+            except Exception:
+                logger.debug("autonav sketch overlay failed", exc_info=True)
+        data = dict(layer)
+        data.update({
+            "mapId": map_id or None,
+            "locReady": st.get("locReady"),
+            "startReady": st.get("startReady"),
+            "stage": st.get("stage"),
+            "pose": st.get("pose"),
+            "odomPose": st.get("odomPose"),
+            "sketchOccupied": sketch,
+            "odomOccupied": odom_occ,
+            "odomBlocked": odom_blk,
+            "odomFree": odom_free,
+            "cloudXY": self._cloud_xy_odom(),
+            "resolution": round(resolution, 3),
+            "lidarReceiving": st.get("lidarReceiving"),
+            "vehicle": self._vehicle_envelope(),
+        })
+        self._send_event_data("autonav_map", data, log=False)
+
+    def _handle_autonav_goto(self, cmd: Command) -> None:
+        frame = self._autonav_cmd_frame(cmd)
+        blocked = self._task_autonomy_blocking_autonav()
+        if blocked:
+            self._send_event("fault", f"autonav_goto: {blocked}")
+            return
+        if frame == "map":
+            self._localization_tick()
+            st = self._autonav_status()
+            if not st.get("locReady"):
+                self._send_event(
+                    "fault",
+                    f"autonav_goto: 未定位（{st.get('stage')}）。{st.get('hint') or ''}",
+                )
+                return
+            req = normalize_map_id(cmd.name or "")
+            selected = normalize_map_id(self._autonav_map_id or "")
+            if req:
+                if is_banned(req) or not is_qualified(req):
+                    self._send_event(
+                        "fault",
+                        f"autonav_goto: 拒绝地图 '{req}'（须为 qualified.json 中的合格图）",
+                    )
+                    return
+                if selected and req != selected:
+                    self._send_event(
+                        "fault",
+                        f"autonav_goto: 目标图 '{req}' 与当前选择 '{selected}' 不一致",
+                    )
+                    return
+            mx, my = float(cmd.x), float(cmd.y)
+            myaw = float(cmd.yaw_deg) if cmd.goal_yaw_set else 0.0
+            ox, oy, oyaw = self._map_alignment.map_to_odom(mx, my, myaw)
+            goal_rec = {
+                "x": round(mx, 3),
+                "y": round(my, 3),
+                "yawDeg": round(myaw, 2) if cmd.goal_yaw_set else None,
+                "frame": "map",
+            }
+        else:
+            ox, oy = float(cmd.x), float(cmd.y)
+            oyaw = float(cmd.yaw_deg) if cmd.goal_yaw_set else 0.0
+            goal_rec = {
+                "x": round(ox, 3),
+                "y": round(oy, 3),
+                "yawDeg": round(oyaw, 2) if cmd.goal_yaw_set else None,
+                "frame": frame,
+            }
+        self._autonav_active = True
+        self._autonav_frame = frame
+        self._autonav_started_at = time.monotonic()
+        self._autonav_saw_nav = False
+        self._autonav_loc_miss = 0
+        self._autonav_goal_map = goal_rec
+        odom_cmd = Command(
+            action="goto",
+            x=ox,
+            y=oy,
+            speed=cmd.speed,
+            yaw_deg=oyaw,
+            goal_yaw_set=cmd.goal_yaw_set,
+        )
+        started = self._run_goto(odom_cmd, event="autonav_goto")
+        if not started:
+            self._clear_autonav()
+
+    def _run_goto(self, cmd: Command, *, event: str = "goto") -> bool:
+        """里程系 goto 核心。成功返回 True。"""
+        nav = self._ensure_navigator()
         if nav is None:
             logger.warning("goto rejected: navigator not initialized")
-            self._send_event("fault", "goto: 导航未启用（雷达未就绪）")
-            return
+            self._send_event("fault", f"{event}: 导航未启用（雷达未就绪）")
+            return False
 
         # 雷达栈已开启但收不到点云：fail-safe 守卫会把一切速度指令拦成停车，
         # 直接拒绝并给原因，避免「下发后小车没反应、5s 后才 auto_stop」。
         lidar = self._lidar
         if lidar is not None and not lidar.is_receiving:
-            self._send_event(
-                "fault",
-                "goto: 雷达已开启但当前收不到点云（0 帧），无法安全导航。"
-                "先排查雷达数据链路（见 lidar status 的 packets 计数），"
-                "雷达在线后再试",
-            )
-            return
+            if self._lidar_allows_open_loop_goto():
+                logger.warning("%s: 无点云，开环前往（近场不刹车）", event)
+                self._send_event(
+                    event,
+                    f"{event}: 尚无 /rslidar_points，开环前往。SSH 开 rslidar_sdk 后会近场刹车",
+                )
+            else:
+                self._send_event(
+                    "fault",
+                    f"{event}: 雷达已开启但当前收不到点云（0 帧），无法安全导航。"
+                    "先排查雷达数据链路（见 lidar status 的 packets 计数），"
+                    "雷达在线后再试",
+                )
+                return False
 
         # 雷达 2D 伪地图预检目标点：已知不可通行/被障碍占据 → 直接拒绝，
         # 避免「设计 goto 前不知道哪里不能走」导致撞台阶/岩壁。
@@ -2819,10 +3936,10 @@ class BunkerMiniAgent:
                 if self._confirm_obstacle_between(cmd.x, cmd.y, nav, lidar):
                     self._send_event(
                         "fault",
-                        f"goto 目标 ({cmd.x:.2f}, {cmd.y:.2f}) 前方存在实时障碍，"
+                        f"{event} 目标 ({cmd.x:.2f}, {cmd.y:.2f}) 前方存在实时障碍，"
                         "已拒绝下发（导航途中会被避障守卫挡住）",
                     )
-                    return
+                    return False
                 logger.warning(
                     "goto precheck: 伪地图标记目标为 %s（最近障碍 %s m），"
                     "但实时雷达目标方位无近障，按可通行放行",
@@ -2844,43 +3961,59 @@ class BunkerMiniAgent:
             self._pending_command = None
             self._move_deadline = None
 
-        speed = cmd.speed if cmd.speed > 0.0 else None
-        if speed is not None:
-            speed = min(speed, MAX_SAFE_LINEAR_M_S)
-            logger.info("GOTO: 本次导航线速度上限 %.2f m/s", speed)
+        replacing = bool(nav.is_navigating)
+        if replacing:
+            nav.stop()
+
+        speed = cmd.speed if cmd.speed > 0.0 else GOTO_DEFAULT_SPEED_M_S
+        speed = min(speed, MAX_SAFE_LINEAR_M_S)
+        logger.info("GOTO: 本次导航线速度上限 %.2f m/s", speed)
 
         # 全局路径规划：把「A* 绕障折线」切成中间航点，goto 沿航点导航，
         # 避免直线 goto 直穿已知障碍。规划失败/无地图时退化为直线导航。
         waypoints = self._plan_waypoints(cmd.x, cmd.y)
 
         goal_yaw = math.radians(cmd.yaw_deg) if cmd.goal_yaw_set else None
+        gx, gy = float(cmd.x), float(cmd.y)
+
+        def _on_goto_arrived() -> None:
+            self._record_goto_result(gx, gy, arrived=True)
+            if event == "autonav_goto":
+                self._clear_autonav()
+
+        def _on_goto_abort(reason: str) -> None:
+            if event == "autonav_goto":
+                self._clear_autonav()
+            self._send_event("auto_stop", f"{event} aborted: {reason}")
+
         ok = nav.goto(
             cmd.x,
             cmd.y,
             waypoints=waypoints,
-            on_arrived=lambda: self._send_event(
-                EventType.ARRIVED,
-                f"goto arrived: ({cmd.x:.2f}, {cmd.y:.2f})",
-            ),
-            on_abort=lambda reason: self._send_event(
-                "auto_stop", f"goto aborted: {reason}"
-            ),
+            on_arrived=_on_goto_arrived,
+            on_abort=_on_goto_abort,
             speed=speed,
             replanner=self._replan_waypoints,
             goal_yaw=goal_yaw,
         )
         if not ok:
-            self._send_event("fault", "goto: 已在导航中，请先停止")
-            return
+            self._send_event("fault", f"{event}: 无法开始导航")
+            return False
         n_wp = len(waypoints) if waypoints else 0
         logger.info("GOTO: navigating to (%.2f, %.2f) via %d planned waypoint(s)",
                     cmd.x, cmd.y, n_wp)
+        started = "已改目标" if replacing else "导航已开始"
+        yaw_txt = f"，终点航向 {cmd.yaw_deg:.1f}°" if cmd.goal_yaw_set else ""
+        label = "自动导航" if event == "autonav_goto" else "goto"
         self._send_event(
-            "goto",
-            f"导航已开始：目标 ({cmd.x:.2f}, {cmd.y:.2f})"
-            + (f"，{n_wp} 个航点" if n_wp else "，直线"),
+            event,
+            f"{label}{started}：目标 ({cmd.x:.2f}, {cmd.y:.2f})"
+            + (f"，{n_wp} 个航点" if n_wp else "，直线")
+            + f"，≤{speed:.2f} m/s"
+            + yaw_txt,
         )
         self._push_state(force=True)
+        return True
 
     def _confirm_obstacle_between(self, tx: float, ty: float, nav,
                                   lidar) -> bool:
@@ -2954,6 +4087,9 @@ class BunkerMiniAgent:
         if lidar is None or not lidar.is_receiving:
             logger.warning("find_object rejected: lidar offline")
             self._send_event("fault", "find_object: 雷达离线，无法视觉检测")
+            return
+        if self._autonav_active:
+            self._send_event("fault", "find_object: 自动导航进行中，探路已拒绝")
             return
 
         # 互斥：停掉一切正在驱动底盘的运动源
@@ -3168,9 +4304,9 @@ class BunkerMiniAgent:
     def _restore_occ_ttl(self) -> None:
         """任务链结束：恢复进入任务前保存的 TTL。
 
-        建图模式基线为 0（``_start_lidar`` 已 ``set_ttl(0)``）。
-        ``saved is None`` 时保持 0，避免误把累计地图拉回 5s 衰减。
-        find_object 探路中仍用临时长 TTL，结束按保存值恢复（通常为 0）。
+        任务 goto 基线是 ``PSEUDO_MAP_TTL_S``（约 5 s）。``saved is None``
+        时回到该基线，不要误关衰减。auto_mission 建图若把基线设成 0，
+        find_object 会把 0 存进 saved，结束仍恢复 0。
         """
         grid = self._occ_grid
         saved = self._occ_ttl_saved
@@ -3178,7 +4314,7 @@ class BunkerMiniAgent:
         if grid is None:
             return
         try:
-            grid.set_ttl(0.0 if saved is None else float(saved))
+            grid.set_ttl(PSEUDO_MAP_TTL_S if saved is None else float(saved))
         except Exception:
             logger.debug("restore occupancy TTL failed", exc_info=True)
 
@@ -3775,7 +4911,13 @@ class BunkerMiniAgent:
         语义：停止回放/任务/导航/机械臂对接，若 find_object 已录到轨迹
         （探路/导航阶段）则定格该轨迹并沿其返回起点；无轨迹时仅停车。
         ``detail`` 供断电保护复用本路径时改写任务链说明。
+        自动导航进行中且无探路任务时只停车，不走返回起点。
         """
+        if self._autonav_active:
+            mt = self._mission_thread
+            if mt is None or not mt.is_alive():
+                self._handle_autonav_cancel(cmd)
+                return
         player = self._player
         if player is not None and player.is_playing:
             player.stop()
@@ -3832,6 +4974,19 @@ class BunkerMiniAgent:
         使 ``goto``/``find_object`` 的导航原点 (0, 0) 从当前位置重新起算
         （换起点 / 小车被搬动后校正坐标系）。
         """
+        live_ext = False
+        src = self._pose_source
+        if src is not None:
+            try:
+                live_ext = src.get_pose() is not None
+            except Exception:
+                live_ext = False
+        if self._autonav_active or live_ext:
+            self._send_event(
+                "fault",
+                "odom_reset: 定位锁定或自动导航中禁止重置里程原点（会和地图系打架）",
+            )
+            return
         player = self._player
         if player is not None and player.is_playing:
             player.stop()
@@ -3861,6 +5016,8 @@ class BunkerMiniAgent:
         self._scan_match_last_yaw = None
         self._loc_source = "odom"
         self._loc_last_corr = None
+        self._last_plan_path = None
+        self._last_goto = None
         self._send_event("odom_reset", "里程系原点已重置为当前位置")
         logger.info("ODOM_RESET: pose origin reset to current location")
         self._push_state(force=True)
@@ -3943,6 +5100,111 @@ class BunkerMiniAgent:
         logger.info("MAP_RETURN: prefer_map_return=%s",
                     self._prefer_map_return)
 
+    def _record_goto_result(self, gx: float, gy: float, *, arrived: bool) -> None:
+        """把里程系残差写进 lastGoto，arrived 文案带上厘米/航向差。"""
+        nav = self._navigator
+        result: dict[str, Any] = {}
+        raw = getattr(nav, "last_result", None) if nav is not None else None
+        if isinstance(raw, dict):
+            result = dict(raw)
+        elif nav is not None:
+            pose = getattr(nav, "pose", None)
+            if pose is not None:
+                err_m = math.hypot(gx - pose.x, gy - pose.y)
+                result = {
+                    "arrived": arrived,
+                    "goalX": round(gx, 3),
+                    "goalY": round(gy, 3),
+                    "x": round(pose.x, 3),
+                    "y": round(pose.y, 3),
+                    "yawDeg": round(float(pose.yaw_deg), 2),
+                    "errM": round(err_m, 4),
+                }
+        result["source"] = self._loc_source
+        self._last_goto = result
+        err_m = result.get("errM")
+        err_yaw = result.get("errYawDeg")
+        msg = f"goto arrived: ({gx:.2f}, {gy:.2f})"
+        if err_m is not None:
+            msg += f"  残差 {float(err_m):.3f} m"
+        if err_yaw is not None:
+            msg += f" / {float(err_yaw):.1f}°"
+        loc = self._loc_source
+        if loc:
+            msg += f"  [{loc}]"
+        self._send_event(EventType.ARRIVED, msg)
+        self._push_state(force=True)
+
+    def _apply_wheelbase(self, wheelbase_m: float, *, persist: bool = True) -> float:
+        wb = float(wheelbase_m)
+        if not (WHEELBASE_MIN_M <= wb <= WHEELBASE_MAX_M):
+            raise ValueError(
+                f"轮距须在 {WHEELBASE_MIN_M:.2f}～{WHEELBASE_MAX_M:.2f} m"
+            )
+        self._wheelbase_m = wb
+        nav = self._navigator
+        if nav is not None and hasattr(nav, "set_wheelbase"):
+            nav.set_wheelbase(wb)
+        ctrl = self._controller
+        if ctrl is not None and hasattr(ctrl, "set_wheelbase"):
+            ctrl.set_wheelbase(wb)
+        if persist:
+            try:
+                save_wheelbase_m(wb)
+            except Exception:
+                logger.exception("failed to persist wheelbase")
+        return wb
+
+    def _handle_set_wheelbase(self, cmd: Command) -> None:
+        """运行时改轮距，并写入 bunker_jetson/wheelbase.local。"""
+        if cmd.wheelbase_m <= 0:
+            self._send_event(
+                "fault",
+                f"set_wheelbase: 需要 wheelbaseM（{WHEELBASE_MIN_M:.2f}～{WHEELBASE_MAX_M:.2f} m）",
+            )
+            return
+        try:
+            wb = self._apply_wheelbase(cmd.wheelbase_m)
+        except ValueError as exc:
+            self._send_event("fault", f"set_wheelbase: {exc}")
+            return
+        self._send_event(
+            "wheelbase",
+            f"轮距已设为 {wb:.3f} m（已写入 wheelbase.local；也可设环境变量 BUNKER_WHEELBASE）",
+        )
+        logger.info("WHEELBASE: set to %.4f m", wb)
+        self._push_state(force=True)
+
+    def _handle_calibrate_wheelbase(self, cmd: Command) -> None:
+        """重置原点后原地转到已知角，用地面实测航向标定轮距。"""
+        nav = self._ensure_navigator()
+        if nav is None:
+            self._send_event("fault", "calibrate_wheelbase: 导航未启用")
+            return
+        if not cmd.goal_yaw_set:
+            self._send_event(
+                "fault",
+                "calibrate_wheelbase: 需要 yawDeg（地面实测航向，相对重置原点）",
+            )
+            return
+        pose = nav.pose
+        old_wb = float(self._wheelbase_m)
+        try:
+            new_wb = scale_wheelbase(old_wb, pose.yaw_deg, cmd.yaw_deg)
+            wb = self._apply_wheelbase(new_wb)
+        except ValueError as exc:
+            self._send_event("fault", f"calibrate_wheelbase: {exc}")
+            return
+        self._send_event(
+            "wheelbase",
+            f"轮距 {old_wb:.3f}→{wb:.3f} m ← 积分 {pose.yaw_deg:.1f}° / 实测 {cmd.yaw_deg:.1f}°",
+        )
+        logger.info(
+            "WHEELBASE: calibrated to %.4f m (reported %.2f° actual %.2f°)",
+            wb, pose.yaw_deg, cmd.yaw_deg,
+        )
+        self._push_state(force=True)
+
     # ------------------------------------------------------------------
     # LiDAR remote control  (lidar_on/off/status/map — 云端雷达命令)
     # ------------------------------------------------------------------
@@ -3956,6 +5218,7 @@ class BunkerMiniAgent:
         ``is_receiving`` 必然为 False，直接判失败是误报）。
         """
         # 与正在驱动底盘的任务互斥：雷达栈重建期间不保留任何运动源
+        self._lidar_passive = False
         player = self._player
         if player is not None and player.is_playing:
             player.stop()
@@ -3965,12 +5228,40 @@ class BunkerMiniAgent:
             # 绑定失败（端口被占等）：_start_lidar 已推送带具体原因的 fault
             return
         lidar = self._lidar
-        if lidar is not None and self._wait_lidar_online():
-            self._send_event("lidar", "雷达已开启并在线")
+        wait_s = 10.0 if self._lidar_source_name() == "ros" else 5.0
+        if lidar is not None and self._wait_lidar_online(wait_s):
+            src = self._lidar_source_name()
+            if src == "ros":
+                self._send_event(
+                    "lidar",
+                    "雷达已开启并在线（订 /rslidar_points，未抢 UDP 6699）",
+                )
+            elif src == "pcap":
+                self._send_event("lidar", "雷达已开启并在线（PCAP 回放）")
+            else:
+                self._send_event("lidar", "雷达已开启并在线（UDP MSOP）")
+            self._maybe_arm_lidar_failsafe()
         else:
             frames = lidar.frame_count if lidar else 0
             packets = lidar.packet_count if lidar else 0
             bad = lidar.bad_packet_count if lidar else 0
+            if self._lidar_source_name() == "ros":
+                if packets == 0:
+                    hint = (
+                        "MSOP 6699 已被占用，已改订 /rslidar_points，但尚未收到点云。"
+                        "请确认 rslidar_sdk 在跑、ROS_DOMAIN_ID 与建图一致（默认 0）、"
+                        "且 maps/rslidar_cloud_bridge.sh 能 import rclpy"
+                    )
+                else:
+                    hint = (
+                        f"已收到 {packets} 帧点云，但最近已停更："
+                        "rslidar_sdk 可能已停或 FastDDS 断流"
+                    )
+                self._send_event(
+                    "fault",
+                    f"雷达桥已启动但收不到 /rslidar_points：{hint}",
+                )
+                return
             if packets == 0:
                 hint = (
                     f"当前收到 0 个 UDP 包 → 数据根本没到本机：用雷达配置工具把"
@@ -4007,7 +5298,9 @@ class BunkerMiniAgent:
         latest = getattr(lidar, "latest_frame", None) if lidar is not None else None
         info: dict[str, Any] = {
             "online": online,
-            "source": "pcap" if self._lidar_pcap else "udp",
+            "source": self._lidar_source_name() if lidar is not None else (
+                "pcap" if self._lidar_pcap else "off"
+            ),
             "frames": lidar.frame_count if lidar else 0,
             "packets": lidar.packet_count if lidar else 0,
             "badPackets": lidar.bad_packet_count if lidar else 0,
@@ -4051,7 +5344,17 @@ class BunkerMiniAgent:
             }
         # 离线时给出数据链路诊断，帮云端直接判断问题在哪一层
         if not online and lidar is not None:
-            if lidar.packet_count == 0:
+            if self._lidar_source_name() == "ros":
+                if lidar.packet_count == 0:
+                    info["diagnosis"] = (
+                        "0 帧点云：已订 /rslidar_points 但话题无数据。"
+                        "确认 rslidar_sdk 在跑，且未再开 Python Airy 抢 6699"
+                    )
+                else:
+                    info["diagnosis"] = (
+                        f"已收到 {lidar.packet_count} 帧，但最近无更新：SDK 可能停发"
+                    )
+            elif lidar.packet_count == 0:
                 info["diagnosis"] = (
                     "0 包到达：雷达未向本机发包。用雷达配置工具把数据目标 IP/端口"
                     "设为本机 IP:6699（RoboSense 是主动发包方），核对网线/网段/防火墙"
@@ -4079,7 +5382,22 @@ class BunkerMiniAgent:
         lidar = self._lidar
         nav = self._navigator
         if grid is None:
-            self._send_event("fault", "雷达地图未就绪（先执行 lidar on）")
+            pose = nav.pose if nav is not None else Pose2D()
+            self._send_event_data("lidar_map", {
+                "online": bool(lidar is not None and lidar.is_receiving),
+                "ready": False,
+                "occupied": [],
+                "blocked": [],
+                "free": [],
+                "occupiedCells": 0,
+                "blockedCells": 0,
+                "freeCells": 0,
+                "pose": {
+                    "x": round(pose.x, 2),
+                    "y": round(pose.y, 2),
+                    "yawDeg": round(pose.yaw_deg, 1),
+                },
+            })
             return
         if lidar is not None and nav is not None:
             self._update_occupancy_grid(lidar, nav)
@@ -4159,9 +5477,10 @@ class BunkerMiniAgent:
         """
         lidar = self._lidar
         online = bool(lidar is not None and lidar.is_receiving)
+        max_pts = TCP_PC_MAX_POINTS if self._local_mode else PC_STREAM_MAX_POINTS
         if online and lidar is not None and hasattr(lidar, "point_cloud"):
             try:
-                data = lidar.point_cloud(max_points=PC_STREAM_MAX_POINTS,
+                data = lidar.point_cloud(max_points=max_pts,
                                          max_range_m=60.0)
             except Exception:
                 logger.exception("point_cloud snapshot error")
@@ -4251,12 +5570,25 @@ class BunkerMiniAgent:
             return None
         try:
             pose = nav.pose
+            planner.reset_cache()
             path = planner.plan(pose.x, pose.y, goal_x, goal_y)
         except Exception:
             logger.exception("Global path planning failed — falling back to straight line")
+            self._last_plan_path = [
+                [round(nav.pose.x, 3), round(nav.pose.y, 3)],
+                [round(goal_x, 3), round(goal_y, 3)],
+            ]
             return None
         if not path:
+            self._last_plan_path = [
+                [round(nav.pose.x, 3), round(nav.pose.y, 3)],
+                [round(goal_x, 3), round(goal_y, 3)],
+            ]
             return None
+        poly = [[round(w.x, 3), round(w.y, 3)] for w in path]
+        if math.hypot(poly[-1][0] - goal_x, poly[-1][1] - goal_y) > 0.05:
+            poly.append([round(goal_x, 3), round(goal_y, 3)])
+        self._last_plan_path = poly
         # 去掉起点；末端若与最终目标几乎重合也去掉（避免无谓的「到达-推进」循环）
         wps = [(w.x, w.y) for w in path[1:]]
         while wps:
@@ -4303,6 +5635,10 @@ class BunkerMiniAgent:
         """
         player = self._player
         if player is None or self._controller is None:
+            return
+
+        if self._autonav_active:
+            self._send_event("fault", "task_submit: 自动导航进行中，运输任务已拒绝")
             return
 
         if not cmd.task_id:
@@ -4426,6 +5762,11 @@ class BunkerMiniAgent:
             "odometer": snapshot.odometer,
             "faultCode": snapshot.fault_code,
         }
+        # 0x211 电池包电压（V）。状态栏只打 SOC=0.89 时会被误读成「电压 0.89」。
+        st = getattr(self._controller, "latest_status", None)
+        volt = getattr(st, "battery_voltage_v", None) if st is not None else None
+        if volt is not None and float(volt) > 5.0:
+            payload["batteryVoltageV"] = round(float(volt), 1)
         # 底盘控制模式/车辆状态：云端据此发现「遥控器抢占 CAN 指令」。
         # 遥控器开着时（REMOTE_CONTROL）CAN 运动指令无效，状态里直接点名，
         # 避免操作员下发 move/goto 后发现小车没动却不知原因。
@@ -4470,6 +5811,8 @@ class BunkerMiniAgent:
             }
             payload["navigating"] = nav.is_navigating
         payload["drive"] = self._drive_status()
+        if self._last_replay is not None:
+            payload["lastReplay"] = dict(self._last_replay)
         lidar = self._lidar
         if lidar is not None:
             front = None
@@ -4477,6 +5820,7 @@ class BunkerMiniAgent:
                 front = self._guard.forward_distance(0.0, 0.0)
             payload["lidar"] = {
                 "online": lidar.is_receiving,
+                "source": self._lidar_source_name(),
                 "frames": lidar.frame_count,
                 "frontObstacle": round(front, 3) if front is not None else None,
             }
@@ -4505,6 +5849,8 @@ class BunkerMiniAgent:
         # /外部 SLAM 修正后才是闭环位姿）。
         payload["localization"] = {
             "source": self._loc_source,
+            "wheelbaseM": round(float(self._wheelbase_m), 4),
+            "yawMatch": bool(self._autonav_yaw_match),
         }
         corr = self._loc_last_corr
         if corr is not None:
@@ -4515,6 +5861,9 @@ class BunkerMiniAgent:
                 "dyawDeg": corr["dyawDeg"],
                 "agoS": round(ago, 1),
             }
+        if self._last_goto is not None:
+            payload["lastGoto"] = self._last_goto
+        payload["autonav"] = self._autonav_status()
         # Let the cloud see whether a trajectory is being recorded right now
         # (the mock_cloud shows a ●REC tag so the operator gets immediate
         # visual confirmation that track_record actually started).
@@ -4894,6 +6243,14 @@ class BunkerMiniAgent:
             except Exception:
                 logger.exception("Navigator stop error")
             self._navigator = None
+        src = self._pose_source
+        if self._tf_pose_owned and src is not None:
+            try:
+                stop = getattr(src, "stop", None)
+                if callable(stop):
+                    stop()
+            except Exception:
+                logger.debug("TF pose source stop failed", exc_info=True)
         lidar = self._lidar
         if lidar is not None:
             try:

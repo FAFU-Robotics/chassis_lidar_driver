@@ -1,0 +1,15 @@
+P2 LocalMap — real RViz 3D view only
+shot_wall: 2026-09-04 17:16:42
+source: Real RViz (display/camera only; no MOLA/ICP/TF/YAML edits)
+topics: /rslidar_points (low alpha) + /lidar_odometry/localmap_points (subject)
+tf: map -> base_link -> rslidar
+rslidar_points_hz: 11.25
+lidar_odometry_localmap_points_n: 11341
+lidar_odometry_pose_hz: 3.42
+pose_quality: 0.844913125038147
+tf_map_rslidar: OK
+CAN: 0
+chassis_motion: No
+data: Real RViz
+matplotlib_3d: No
+ai_fill: No

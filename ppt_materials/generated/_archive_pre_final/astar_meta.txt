@@ -1,0 +1,10 @@
+found=True
+waypoints=7
+path_length_m=4.2714
+detour=True
+start=3.6001,-2.4840
+goal=2.4193,-4.0982
+forward_m=2.0
+goal_note=heading_2.0m
+executed=False
+can_sent=False

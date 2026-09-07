@@ -1,0 +1,70 @@
+{
+  "03": {
+    "file": "/home/fafu_robot/Desktop/chassis_lidar_drivers/ppt_materials/generated/final_20260904/03_real_rviz_pose.png",
+    "kind": "aux_from_csv",
+    "n": 93,
+    "path_length_m": 3.442,
+    "localmap": [
+      1133,
+      1537
+    ],
+    "csv": "/home/fafu_robot/Desktop/chassis_lidar_drivers/ppt_materials/generated/mola_mapping_20260904/samples.csv"
+  },
+  "06": {
+    "file": "/home/fafu_robot/Desktop/chassis_lidar_drivers/ppt_materials/generated/final_20260904/06_real_experiment_photo_crop.png",
+    "source": "/home/fafu_robot/.cursor/projects/home-fafu-robot-Desktop-chassis-lidar-drivers/assets/c__Users_____AppData_Roaming_Cursor_User_workspaceStorage_38e86d254de3f53b7189327f353755cb_images_d8d65a7df16819b1644829020266c10d-bdae4943-1d14-49ee-a0c1-a4e0117f00d9.jpg",
+    "crop_box": [
+      220,
+      70,
+      1024,
+      820
+    ],
+    "note": "static lab photo crop; not a photo taken during today's chassis motion",
+    "motion_photo_today": false
+  },
+  "04": {
+    "occ": 96,
+    "inf": 975,
+    "free": 164,
+    "unk": 13165,
+    "file": "/home/fafu_robot/Desktop/chassis_lidar_drivers/ppt_materials/generated/final_20260904/04_real_obstacle_grid.png",
+    "source": "/nav_demo/obstacle_grid"
+  },
+  "05": {
+    "occ": 96,
+    "inf": 975,
+    "free": 164,
+    "unk": 13165,
+    "file": "/home/fafu_robot/Desktop/chassis_lidar_drivers/ppt_materials/generated/final_20260904/05_real_astar_path.png",
+    "meta": {
+      "found": true,
+      "error": null,
+      "start": [
+        -0.19972328944721024,
+        0.569931167445269,
+        -0.2677144569232413
+      ],
+      "goal": [
+        1.5361571191860381,
+        0.09378076376669753
+      ],
+      "forward_m": 1.8,
+      "waypoints": 2,
+      "path_length_m": 1.8,
+      "occupied_hits": 0,
+      "inflated_hits": 0,
+      "start_cell": [
+        -2,
+        5
+      ],
+      "goal_cell": [
+        15,
+        0
+      ],
+      "executed": false,
+      "can_sent": false,
+      "date": "2026-09-04"
+    },
+    "source": "plan_once dry-run on live grid"
+  }
+}

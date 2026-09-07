@@ -1,0 +1,14 @@
+已完成实测
+LiDAR: ≈11 Hz
+MOLA Pose: ≈5 Hz
+Pose Quality: avg ≈0.89
+LocalMap: 1244 → 7847 点
+ICP failure: 0
+TF: 正常
+
+数据来源: 2026-09-04 teleop_map4 + 02 LocalMap 截图
+LiDAR ≈11 Hz（RViz 截图时 ros2 topic hz=11.25；建图过程 logger 中位≈15 Hz 偏高，PPT 用实测截图频率）
+MOLA Pose ≈5 Hz（teleop_map4 中位 4.76 Hz）
+Pose Quality avg 0.886 → ≈0.89（min 0.504 / max 1.000）
+LocalMap 1244 → 7847（该圈建图日志；之后 LocalMap 截图为 11341 点）
+ICP failure 0；TF 全程正常

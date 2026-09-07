@@ -36,9 +36,9 @@ DEFAULT_SECTOR_COUNT: int = 120
 DEFAULT_BIN_SIZE_M: float = 0.1
 DEFAULT_MAX_RANGE_M: float = 2.5
 
-# 默认允许的最大台阶/坑深度（米）。BUNKER MINI 2.0 离地间隙约 0.14 m，
-# 允许通过约 1/2 离地间隙的台阶，保守取 0.07 m。甲方现场需按实测标定。
-DEFAULT_STEP_LIMIT_M: float = 0.07
+# 默认允许的最大台阶/坑深度（米）。实车离地约 80 mm，可碾过 ≤3–4 cm 凸起，
+# 5–6 cm 及以上视为不可通行。建图光心高度仍用 0.365 m，与本阈值无关。
+DEFAULT_STEP_LIMIT_M: float = 0.04
 
 # 最大可爬坡度（Δz/Δd，0.5 ≈ 26.6°）：超过视为“墙/岩壁/高堆石”，不可通行。
 # BUNKER MINI 2.0 爬坡能力约 25°~30°，取 0.5 留安全余量。

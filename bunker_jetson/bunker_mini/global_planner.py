@@ -64,9 +64,11 @@ class GlobalPlanner:
         """返回世界系航点序列（含起点、终点）；无可行路径返回 None。
 
         直接可达（起点与终点间无膨胀障碍）时返回两点的直线路径，
-        省去 A* 开销。
+        省去 A* 开销。每次规划都按当前占用格重建膨胀，避免人/椅挪走后
+        仍绕幽灵、或新障碍只有中心格被挡住。
         """
         grid = self._grid
+        self.reset_cache()
         self._rebuild_inflated()
         start = grid.world_to_cell(start_x, start_y)
         goal = grid.world_to_cell(goal_x, goal_y)

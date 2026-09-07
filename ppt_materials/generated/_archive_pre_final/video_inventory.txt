@@ -1,0 +1,69 @@
+PPT 视频/图片素材清单
+日期：2026-09-03（工控机时钟可能显示 8 月 27/28）
+底盘：AgileX Bunker Mini 2.0 + RoboSense Airy（测试底盘，不是最终比赛底盘）
+本轮未开车、未发 CAN 控制、未跑 --live-go / --live-avoid。
+
+================================================================
+一、本轮新生成（真实 topic 渲染，非伪造环境）
+================================================================
+
+1. ppt_materials/generated/lidar_3d_pointcloud.png
+   内容：Airy 一帧三维点云（墙/地面/家具结构，高度着色）
+   是否真实运行：是  /rslidar_points
+   是否适合 PPT：是（第二部分“三维点云空间表达”主图候选）
+   异常：无
+
+2. ppt_materials/generated/mola_localization.png
+   内容：map 系点云 + base_link RGB 坐标轴（MOLA pose）
+   是否真实运行：是  /rslidar_points + /lidar_odometry/pose
+   是否适合 PPT：是（定位页）
+   异常：画面由实时数据绘制，不是 800×600 RViz 窗口截图
+
+3. ppt_materials/generated/obstacle_grid.png
+   内容：2D 障碍栅格 + 机器人位姿（占用/膨胀/可通行）
+   是否真实运行：是  /nav_demo/obstacle_grid + pose
+   是否适合 PPT：是（导航输入/空间建模）
+   异常：栅格是扇区最近击中，不是完整房间 Occupancy 地图
+
+4. ppt_materials/generated/astar_path.png
+   内容：真实 A* 规划（5 航点，绕开前方膨胀障碍，未执行）
+   是否真实运行：是  官方 GlobalPlanner + 当前 obstacle_grid
+   是否适合 PPT：是（路径规划页；必须写“仅规划，未发车”）
+   异常：正前方 2.0 m 落在膨胀里，目标改到最近可通行格 (2.35, 0.35) 约 2.37 m
+
+5. ppt_materials/generated/mola_localmap.png
+   未生成。当前 /lidar_odometry/localmap_points 仅 1111 点，太稀，不适合作为 PPT 三维地图主图。
+
+================================================================
+二、已有文件（不是本轮实车视频）
+================================================================
+
+ppt_materials/A_perception/     仅 README，无 mp4/png
+ppt_materials/B_localization/   仅 README，无 mp4/png
+ppt_materials/C_motion/         仅 README，无 mp4/png
+ppt_materials/D_navigation_roadmap/ 仅 README
+04_视频/                        目录不存在
+原始视频/                        未找到
+精选视频/                        未找到
+~/Videos/                       空
+~/Pictures/截图/                旧桌面截图（2026-08-21 等），未核验内容，不当作本轮导航/建图证据
+
+maps/_ppt_figures/pointcloud_xy.png
+maps/_ppt_figures/pose_xy_yaw.png
+maps/_ppt_figures/map_or_accumulated_xy.png
+maps/_ppt_figures/trajectory_xy.png
+   内容：更早的 2D 轨迹/点云俯视
+   是否真实运行：历史会话产物
+   是否适合 PPT：最多当附录；不能冒充本次 MOLA 三维局部地图
+   异常：不是 /lidar_odometry/localmap_points 实时图
+
+================================================================
+三、视频搜索结果（实车直线 / RViz 点云 / 避障）
+================================================================
+
+1. 实车直线自主运动视频：未找到
+2. RViz 实时点云视频：未找到
+3. 避障测试视频：未找到
+
+PPT 中不得把 Bunker Mini 2.0 写成“最终比赛机器人”。
+自主运动/避障成片需另一次明确允许实车后再录。

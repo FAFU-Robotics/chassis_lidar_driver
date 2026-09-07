@@ -155,6 +155,17 @@ class BunkerMiniController:
 
 
 
+    @property
+    def wheelbase_m(self) -> float:
+        return self._wheelbase_m
+
+    def set_wheelbase(self, wheelbase_m: float) -> None:
+        """Update track width used by synthetic odometry (0x221 fallback)."""
+        wb = float(wheelbase_m)
+        if wb <= 0:
+            raise ValueError("wheelbase_m must be > 0")
+        self._wheelbase_m = wb
+
     def start(self) -> None:
         if self._rx_thread and self._rx_thread.is_alive():
             return

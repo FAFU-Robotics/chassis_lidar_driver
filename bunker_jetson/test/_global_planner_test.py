@@ -96,6 +96,21 @@ class GlobalPlannerTest(unittest.TestCase):
         raw_len = len(planner._a_star((0, 0), (0, 30)))
         self.assertLessEqual(len(path), raw_len)
 
+    def test_plan_rebuilds_inflation_when_obstacle_moves(self) -> None:
+        """旧膨胀不得卡住：障碍挪走后沿 x 轴应能直线通过。"""
+        cells = {(10, 0): OCCUPIED}  # world (1.0, 0) 挡在 (0,0)→(3,0) 上
+        grid = _grid_with_cells(cells)
+        planner = GlobalPlanner(grid, inflation_m=0.3)
+        first = planner.plan(0.0, 0.0, 3.0, 0.0)
+        self.assertIsNotNone(first)
+        # 第一次规划因膨胀会绕开；把障碍搬到 y=1.0
+        with grid._lock:
+            grid._cells.clear()
+            grid._cells[(10, 10)] = OCCUPIED
+        second = planner.plan(0.0, 0.0, 3.0, 0.0)
+        self.assertIsNotNone(second)
+        self.assertEqual(len(second), 2, "障碍离开 x 轴后应恢复直线")
+
 
 if __name__ == "__main__":
     suite = unittest.TestLoader().loadTestsFromTestCase(GlobalPlannerTest)

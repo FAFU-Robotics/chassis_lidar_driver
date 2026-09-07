@@ -25,6 +25,7 @@ import math
 import threading
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable, Optional
 
 from .controller import BunkerMiniController
@@ -34,6 +35,71 @@ logger = logging.getLogger(__name__)
 
 _DEG_PER_RAD: float = 180.0 / math.pi
 _RAD_PER_DEG: float = math.pi / 180.0
+
+# 轮距合理区间（Bunker Mini 履带中心距大约 0.5 m；标定结果超出则拒绝）
+WHEELBASE_MIN_M: float = 0.30
+WHEELBASE_MAX_M: float = 0.80
+DEFAULT_WHEELBASE_M: float = 0.5
+WHEELBASE_FILE_NAME: str = "wheelbase.local"
+
+
+def default_wheelbase_path() -> Path:
+    """``bunker_jetson/wheelbase.local``：标定后下次启动仍用实测轮距。"""
+    return Path(__file__).resolve().parent.parent / WHEELBASE_FILE_NAME
+
+
+def load_wheelbase_m(default: float = DEFAULT_WHEELBASE_M,
+                     path: Optional[Path] = None) -> float:
+    p = path or default_wheelbase_path()
+    try:
+        raw = p.read_text(encoding="utf-8").strip().split()[0]
+        value = float(raw)
+    except (OSError, IndexError, ValueError):
+        return float(default)
+    if not (WHEELBASE_MIN_M <= value <= WHEELBASE_MAX_M):
+        return float(default)
+    return value
+
+
+def save_wheelbase_m(wheelbase_m: float, path: Optional[Path] = None) -> Path:
+    value = float(wheelbase_m)
+    if not (WHEELBASE_MIN_M <= value <= WHEELBASE_MAX_M):
+        raise ValueError(
+            f"wheelbase_m must be in [{WHEELBASE_MIN_M}, {WHEELBASE_MAX_M}] m"
+        )
+    p = path or default_wheelbase_path()
+    p.write_text(f"{value:.4f}\n", encoding="utf-8")
+    return p
+
+
+def scale_wheelbase(
+    current_m: float,
+    reported_yaw_deg: float,
+    actual_yaw_deg: float,
+) -> float:
+    """用「积分航向 vs 地面实测航向」把轮距比例缩放。
+
+    差速模型 ``d_yaw = (dr - dl) / wheelbase``：积分转角偏大说明轮距偏小。
+    ``new = current * reported / actual``。调用前应重置原点再原地转到已知角。
+    """
+    current = float(current_m)
+    if current <= 0:
+        raise ValueError("current wheelbase must be > 0")
+    reported = _wrap_angle(math.radians(float(reported_yaw_deg)))
+    actual = _wrap_angle(math.radians(float(actual_yaw_deg)))
+    if abs(actual) < math.radians(20.0):
+        raise ValueError("actual heading must be at least ±20° from origin")
+    if abs(reported) < math.radians(5.0):
+        raise ValueError("odometry heading barely moved — spin in place first")
+    if reported * actual < 0:
+        raise ValueError("reported and actual heading have opposite signs")
+    scaled = current * (reported / actual)
+    if not (WHEELBASE_MIN_M <= scaled <= WHEELBASE_MAX_M):
+        raise ValueError(
+            f"calibrated wheelbase {scaled:.3f} m outside "
+            f"[{WHEELBASE_MIN_M}, {WHEELBASE_MAX_M}] m"
+        )
+    return scaled
 
 
 @dataclass
@@ -47,6 +113,12 @@ class Pose2D:
     @property
     def yaw_deg(self) -> float:
         return self.yaw * _DEG_PER_RAD
+
+
+# 单次里程增量上限：0x311 回锁 / 合成里程重基时会吐出几十厘米甚至数米
+# 的假位移，导航会觉得自己被瞬移，随后突然加速去追目标。
+_ODOM_SPIKE_M: float = 0.45
+_ODOM_SPIKE_YAW_RAD: float = 1.2
 
 
 class OdometryPose:
@@ -80,6 +152,21 @@ class OdometryPose:
         self._pose = Pose2D(x=x, y=y, yaw=yaw_deg * _RAD_PER_DEG)
         self._last_left_mm = None
 
+    def set_yaw_deg(self, yaw_deg: float) -> None:
+        """只改航向，保留左右轮毫米基准，避免 10 Hz 修正丢掉一拍位移。"""
+        self._pose = Pose2D(x=self._pose.x, y=self._pose.y, yaw=yaw_deg * _RAD_PER_DEG)
+
+    @property
+    def wheelbase_m(self) -> float:
+        return self._wheelbase
+
+    def set_wheelbase(self, wheelbase_m: float) -> None:
+        """Change track width used for future odometry ticks (does not rewind pose)."""
+        wb = float(wheelbase_m)
+        if wb <= 0:
+            raise ValueError("wheelbase_m must be > 0")
+        self._wheelbase = wb
+
     def update(self, left_mm: int, right_mm: int) -> None:
         if self._last_left_mm is None:
             self._last_left_mm = left_mm
@@ -89,9 +176,16 @@ class OdometryPose:
         dr = (right_mm - self._last_right_mm) / 1000.0
         self._last_left_mm = left_mm
         self._last_right_mm = right_mm
-
         d_center = (dl + dr) / 2.0
         d_yaw = (dr - dl) / self._wheelbase
+        if (
+            abs(dl) > _ODOM_SPIKE_M
+            or abs(dr) > _ODOM_SPIKE_M
+            or abs(d_center) > _ODOM_SPIKE_M
+            or abs(d_yaw) > _ODOM_SPIKE_YAW_RAD
+        ):
+            # 丢这一拍，保留新基准。假位移不进位姿，避免随后猛加速。
+            return
         # 以弧段中点角度更新位置，减小离散误差
         mid = self._pose.yaw + d_yaw / 2.0
         self._pose.yaw += d_yaw
@@ -130,6 +224,7 @@ class NavigateConfig:
     terrain_lookahead_m: float = 1.0    # 前方不可通行地形的提前绕行距离
     backup_speed_m_s: float = 0.12      # 被堵死时倒车速度
     backup_duration_s: float = 0.8      # 倒车时长
+    v_slew_m_s2: float = 0.45           # 导航线速度上升斜率；急停解除后禁止 0→限速阶跃
 
 
 class Navigator:
@@ -159,6 +254,7 @@ class Navigator:
         # （STANDBY 自动重使能 + 指令/实测轮速对比）；否则直接 set_velocity。
         self._drive = drive
         self._pose = OdometryPose(wheelbase_m)
+        self._goto_gate = threading.Lock()
 
         self._lock = threading.Lock()
         self._navigating = False
@@ -172,6 +268,8 @@ class Navigator:
         self._on_abort: Optional[Callable[[str], None]] = None
         # 全局重规划回调：被堵死磕时从当前位置重新规划（agent 注入）
         self._replanner: Optional[Callable[[float, float], Optional[list[tuple[float, float]]]]] = None
+        self._last_result: Optional[dict] = None
+        self._nav_v_out: float = 0.0
 
     # -- observation -----------------------------------------------------
 
@@ -190,6 +288,30 @@ class Navigator:
         with self._lock:
             return self._goal
 
+    @property
+    def goal_yaw(self) -> Optional[float]:
+        with self._lock:
+            return self._goal_yaw
+
+    @property
+    def waypoints(self) -> list[tuple[float, float]]:
+        with self._lock:
+            return list(self._waypoints)
+
+    @property
+    def last_result(self) -> Optional[dict]:
+        with self._lock:
+            return dict(self._last_result) if self._last_result else None
+
+    @property
+    def wheelbase_m(self) -> float:
+        with self._lock:
+            return self._pose.wheelbase_m
+
+    def set_wheelbase(self, wheelbase_m: float) -> None:
+        with self._lock:
+            self._pose.set_wheelbase(wheelbase_m)
+
     def feed_odometry(self, left_mm: int, right_mm: int) -> None:
         """Call with every fresh 0x311 frame — keeps the pose estimate live."""
         with self._lock:
@@ -207,6 +329,11 @@ class Navigator:
         """
         with self._lock:
             self._pose.set_pose(x, y, yaw_deg)
+
+    def apply_yaw_correction(self, yaw_deg: float) -> None:
+        """出发系扫描匹配只修航向：不改 XY，也不丢当前轮跳基准。"""
+        with self._lock:
+            self._pose.set_yaw_deg(yaw_deg)
 
     # -- control ---------------------------------------------------------
 
@@ -236,37 +363,46 @@ class Navigator:
         ``goal_yaw``   终点车身航向（弧度，逆时针为正）。``None`` 时用接近
                        目标时锁定的航向（最后一段的 atan2），XY 到位后再
                        原地转正，避免只到点、车身斜着停。
+        正在导航时再次调用会停掉当前段、立刻改去新目标（不再返回 False）。
         """
         cfg = self._config
         if speed is not None:
             if speed <= 0.0:
                 raise ValueError("goto speed must be > 0")
             speed = min(speed, cfg.max_linear_m_s)
-        with self._lock:
-            if self._navigating:
-                logger.warning("Navigator: already navigating, ignoring goto")
-                return False
-            self._goal = (x, y)
-            self._goal_yaw = goal_yaw
-            self._waypoints = list(waypoints or [])
-            self._on_arrived = on_arrived
-            self._on_abort = on_abort
-            self._goal_speed = speed
-            self._replanner = replanner
-            self._navigating = True
-            self._stop_event.clear()
+        with self._goto_gate:
+            with self._lock:
+                replacing = self._navigating
+            if replacing:
+                logger.info(
+                    "Navigator: replacing in-progress goto with (%.2f, %.2f)",
+                    x, y,
+                )
+                self.stop()
+            with self._lock:
+                self._goal = (x, y)
+                self._goal_yaw = goal_yaw
+                self._waypoints = list(waypoints or [])
+                self._on_arrived = on_arrived
+                self._on_abort = on_abort
+                self._goal_speed = speed
+                self._replanner = replanner
+                self._last_result = None
+                self._nav_v_out = 0.0
+                self._navigating = True
+                self._stop_event.clear()
 
-        n_wp = len(self._waypoints)
-        yaw_txt = "approach" if goal_yaw is None else f"{goal_yaw * _DEG_PER_RAD:.1f}deg"
-        logger.info(
-            "Navigating to (%.2f, %.2f) yaw=%s via %d waypoint(s) speed=%.2f",
-            x, y, yaw_txt, n_wp, speed or cfg.max_linear_m_s,
-        )
-        self._thread = threading.Thread(
-            target=self._nav_loop, name="nav-goto", daemon=True
-        )
-        self._thread.start()
-        return True
+            n_wp = len(self._waypoints)
+            yaw_txt = "approach" if goal_yaw is None else f"{goal_yaw * _DEG_PER_RAD:.1f}deg"
+            logger.info(
+                "Navigating to (%.2f, %.2f) yaw=%s via %d waypoint(s) speed=%.2f",
+                x, y, yaw_txt, n_wp, speed or cfg.max_linear_m_s,
+            )
+            self._thread = threading.Thread(
+                target=self._nav_loop, name="nav-goto", daemon=True
+            )
+            self._thread.start()
+            return True
 
     def set_guard(self, guard: Optional[ObstacleGuard]) -> None:
         """Swap the obstacle guard (used when the LiDAR stack is recreated)."""
@@ -278,6 +414,26 @@ class Navigator:
         无 agent._drive 时（单测 / 独立导航）也必须过守卫：绕行与倒车
         旧实现会直接 set_velocity，倒进岩壁/悬崖。急停走 stop_motion。
         """
+        cfg = self._config
+        cap = self._goal_speed if self._goal_speed is not None else cfg.max_linear_m_s
+        cap = abs(float(cap or 0.0))
+        if not math.isfinite(v):
+            v = 0.0
+        if not math.isfinite(w):
+            w = 0.0
+        if cap > 0.0:
+            v = max(-cap, min(cap, v))
+        w = max(-cfg.max_angular_rad_s, min(cfg.max_angular_rad_s, w))
+        prev = self._nav_v_out
+        if abs(v) < 1e-6 or v * prev < 0.0:
+            self._nav_v_out = v
+        else:
+            dt = max(0.01, float(cfg.update_interval_s))
+            max_up = max(1e-4, float(cfg.v_slew_m_s2) * dt)
+            if abs(v) > abs(prev) + max_up:
+                sign = 1.0 if v >= 0.0 else -1.0
+                v = sign * (abs(prev) + max_up)
+            self._nav_v_out = v
         if self._drive is not None:
             self._drive(v, w)
             return
@@ -479,8 +635,9 @@ class Navigator:
                     turn_w = 1.0 - min(1.0, abs(heading_err) / cfg.turn_decel_rad)
                     v_cmd *= max(cfg.turn_min_speed_ratio, turn_w)
 
-                # 通过性提前绕行：目标方向不可通行 → 不等急停，提前转向开阔侧
-                if self._guard is not None:
+                # 通过性提前绕行：目标方向不可通行 → 不等急停，提前转向开阔侧。
+                # 终点 approach_lock 内不做 1 m 前瞻绕行，否则 8 cm 到点会被拧走。
+                if self._guard is not None and dist > cfg.approach_lock_m:
                     block_dist = self._guard.front_blocked_lookahead(cfg.terrain_lookahead_m)
                     if block_dist is not None and not backing:
                         steer = self._guard.steer_away_deg()
@@ -566,11 +723,40 @@ class Navigator:
         finally:
             self._ctrl.stop_motion()
             with self._lock:
+                pose_now = Pose2D(
+                    self._pose.pose.x, self._pose.pose.y, self._pose.pose.yaw,
+                )
+                goal_now = self._goal
+                goal_yaw_now = self._goal_yaw
+                stopped = self._stop_event.is_set()
                 self._navigating = False
                 cb_arrived = self._on_arrived if arrived else None
-                cb_abort = self._on_abort if (abort_reason and not self._stop_event.is_set()) else None
+                cb_abort = self._on_abort if (abort_reason and not stopped) else None
                 self._on_arrived = None
                 self._on_abort = None
+                if goal_now is not None:
+                    err_m = math.hypot(
+                        goal_now[0] - pose_now.x, goal_now[1] - pose_now.y,
+                    )
+                    desired_yaw = (
+                        goal_yaw_now if goal_yaw_now is not None else pose_now.yaw
+                    )
+                    err_yaw_deg = _wrap_angle(desired_yaw - pose_now.yaw) * _DEG_PER_RAD
+                    reason = "arrived" if arrived else (
+                        abort_reason if abort_reason else "stopped"
+                    )
+                    self._last_result = {
+                        "arrived": bool(arrived),
+                        "aborted": bool(abort_reason and not arrived),
+                        "reason": reason,
+                        "goalX": round(float(goal_now[0]), 3),
+                        "goalY": round(float(goal_now[1]), 3),
+                        "x": round(pose_now.x, 3),
+                        "y": round(pose_now.y, 3),
+                        "yawDeg": round(pose_now.yaw_deg, 2),
+                        "errM": round(err_m, 4),
+                        "errYawDeg": round(err_yaw_deg, 2),
+                    }
 
             if arrived:
                 logger.info("Arrived at goal (%.2f, %.2f)", self._goal[0] if self._goal else 0, self._goal[1] if self._goal else 0)

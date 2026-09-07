@@ -1,0 +1,191 @@
+# PPT slide 02 localmap: morning AxisColor style. Display/camera only.
+# Do not overwrite ppt_live.rviz / ppt_live_final.rviz / maps/mola_lo.rviz.
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+    Property Tree Widget:
+      Expanded:
+        - /Global Options1
+      Splitter Ratio: 0.4
+    Tree Height: 60
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Alpha: 0.35
+      Cell Size: 1
+      Class: rviz_default_plugins/Grid
+      Color: 160; 160; 168
+      Enabled: true
+      Line Style:
+        Line Width: 0.02
+        Value: Lines
+      Name: Grid
+      Normal Cell Count: 0
+      Offset:
+        X: 0
+        Y: 0
+        Z: 0
+      Plane: XY
+      Plane Cell Count: 28
+      Reference Frame: <Fixed Frame>
+      Value: true
+    - Class: rviz_default_plugins/TF
+      Enabled: true
+      Frame Timeout: 15
+      Frames:
+        All Enabled: false
+        base_footprint:
+          Value: false
+        base_link:
+          Value: true
+        map:
+          Value: false
+        odom:
+          Value: false
+        rslidar:
+          Value: false
+      Marker Scale: 0.18
+      Name: TF
+      Show Arrows: false
+      Show Axes: false
+      Show Names: false
+      Update Interval: 0
+      Value: true
+    - Alpha: 1.0
+      Autocompute Intensity Bounds: true
+      Autocompute Value Bounds:
+        Max Value: 3.6
+        Min Value: 0.35
+        Value: true
+      Axis: Z
+      Channel Name: z
+      Class: rviz_default_plugins/PointCloud2
+      Color: 255; 255; 255
+      Color Transformer: AxisColor
+      Decay Time: 0
+      Enabled: true
+      Invert Rainbow: false
+      Max Color: 255; 255; 255
+      Min Color: 0; 0; 0
+      Name: LocalMap
+      Position Transformer: XYZ
+      Selectable: false
+      Size (Pixels): 3
+      Size (m): 0.045
+      Style: Points
+      Topic:
+        Depth: 5
+        Durability Policy: Transient Local
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /lidar_odometry/localmap_points
+      Use Fixed Frame: true
+      Use rainbow: true
+      Value: true
+    - Angle Tolerance: 0.02
+      Class: rviz_default_plugins/Odometry
+      Covariance:
+        Orientation:
+          Value: false
+        Position:
+          Value: false
+        Value: false
+      Enabled: true
+      Keep: 1
+      Name: RobotCube
+      Position Tolerance: 0.02
+      Shape:
+        Alpha: 1
+        Axes Length: 0.69
+        Axes Radius: 0.08
+        Color: 250; 250; 252
+        Head Length: 0.12
+        Head Radius: 0.06
+        Shaft Length: 0.28
+        Shaft Radius: 0.04
+        Value: Cube
+      Topic:
+        Depth: 5
+        Durability Policy: Transient Local
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /lidar_odometry/pose
+      Value: true
+    - Alpha: 0.25
+      Autocompute Intensity Bounds: true
+      Autocompute Value Bounds:
+        Max Value: 3.0
+        Min Value: 0.0
+        Value: false
+      Axis: Z
+      Channel Name: z
+      Class: rviz_default_plugins/PointCloud2
+      Color: 180; 180; 180
+      Color Transformer: FlatColor
+      Decay Time: 0
+      Enabled: false
+      Invert Rainbow: false
+      Name: RawLidar
+      Position Transformer: XYZ
+      Selectable: false
+      Size (Pixels): 1
+      Size (m): 0.008
+      Style: Points
+      Topic:
+        Depth: 10
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /rslidar_points
+      Use Fixed Frame: true
+      Use rainbow: false
+      Value: false
+  Enabled: true
+  Global Options:
+    Background Color: 0; 0; 0
+    Fixed Frame: map
+    Frame Rate: 20
+  Name: root
+  Tools:
+    - Class: rviz_default_plugins/MoveCamera
+  Transformation:
+    Current:
+      Class: rviz_default_plugins/TF
+  Value: true
+  Views:
+    Current:
+      Class: rviz_default_plugins/XYOrbit
+      Distance: 11.5
+      Enable Stereo Rendering:
+        Stereo Eye Separation: 0.06
+        Stereo Focal Distance: 1
+        Swap Stereo Eyes: false
+        Value: false
+      Focal Point:
+        X: 1.80
+        Y: -1.10
+        Z: 0.35
+      Focal Shape Fixed Size: true
+      Focal Shape Size: 0.01
+      Invert Z Axis: false
+      Name: Current View
+      Near Clip Distance: 0.01
+      Pitch: 0.95
+      Target Frame: map
+      Value: XYOrbit (rviz_default_plugins)
+      Yaw: 0.72
+    Saved: ~
+Window Geometry:
+  Displays:
+    collapsed: true
+  Height: 580
+  Hide Left Dock: true
+  Hide Right Dock: true
+  QMainWindow State: 000000ff00000000fd00000003000000000000000000000000fc0200000001fb000000100044006900730070006c0061007900730000000000ffffffff0000002600ffffff000000010000000000000000fc0200000003fb0000000a005600690065007700730000000000ffffffff0000002600fffffffb0000001200530065006c0065006300740069006f006e0000000000ffffffff0000002600fffffffb0000001e0054006f006f006c002000500072006f00700065007200740069006500730000000000ffffffff0000002600ffffff000000030000000000000000fc0100000001fb0000000800540069006d00650000000000ffffffff0000003b00ffffff000000000000000000000004000000040000000800000008fc00000000
+  Time:
+    collapsed: true
+  Views:
+    collapsed: true
+  Width: 780
+  X: 10
+  Y: 10

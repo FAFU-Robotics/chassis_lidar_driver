@@ -1,0 +1,46 @@
+{
+  "wall": "2026-09-04 18:21:42",
+  "source_topics": [
+    "/rslidar_points",
+    "/lidar_odometry/pose",
+    "/nav_demo/obstacle_grid"
+  ],
+  "grid": {
+    "w": 120,
+    "h": 120,
+    "resolution_m": 0.10000000149011612,
+    "origin_xy": [
+      -4.212773000394749,
+      -6.8349583549176085
+    ],
+    "occupied": 147,
+    "inflated": 1606,
+    "free": 203,
+    "unknown": 12444
+  },
+  "start": {
+    "x": 1.7849687079698369,
+    "y": -0.8336246949825743,
+    "yaw_deg": -8.968876458484855
+  },
+  "goal": {
+    "x": 3.25,
+    "y": -2.85,
+    "note": "demo free cell; straight LOS blocked by occupied; one GlobalPlanner.plan()",
+    "forward_m": null
+  },
+  "astar": {
+    "found": true,
+    "path_length_m": 3.3542,
+    "waypoints": 5,
+    "occupied_hits": 0,
+    "inflated_hits": 0,
+    "nearest_occupied_m": 0.511,
+    "executed": false,
+    "can_sent": false,
+    "los_occupied_on_straight": 2,
+    "display_unknown_to_free_along_path": 180
+  },
+  "planner": "nav_demo GlobalPlanner inflation=0.20; single plan() from live start to free goal with blocked LOS",
+  "crop": "display-only BFS of known cells connected to robot; grid data unchanged"
+}

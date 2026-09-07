@@ -4,11 +4,12 @@
 放在仓库根目录 ``chassis_lidar_drivers/``。
 
     python3 run_local.py
+    python3 run_local.py --daemon --no-lidar   # 开机服务用：无终端、不开雷达窗
 
 原理
-    拉起车侧代理 ``run_agent.py --local``（CAN + 雷达 + 任务编排，
-    **不连已废弃的云端、不开 WebSocket**）。本窗口是命令台：``fo`` / ``goto``
-    / ``r`` 等经 **TCP :9100** 下发。探路 / 导航 / 回放在 Jetson 本地闭环。
+    拉起车侧代理 ``run_agent.py --local``（CAN + 任务编排，
+    **不连已废弃的云端、不开 WebSocket**）。交互窗口可敲 ``fo`` / ``goto``
+    / ``r``；无头 ``--daemon`` 只听 ``:9100`` + 网页 ``:9101``，供笔记本客户端连接。
 
     老师要求的 100Hz / ≤20ms 遥控 **不是** 本窗口里敲 ``kb``。
     Cursor / SSH 终端只有字符流、没有 key-up，输入只有 10～30Hz。
@@ -17,8 +18,9 @@
 
     雷达窗口启动本机脚本（``view_lidar.py`` / ``live_airview.py``）。
 
-Ctrl+C：立即急停并退出。物理急停始终有效。
+Ctrl+C / 停止服务：立即急停并退出。物理急停始终有效。
 不要和已废弃的 ``run_mission.py`` / ``mock_cloud`` 或 ``bunker-teleop.service`` 抢 9100。
+开机自启见仓库根目录 ``install_local_service.sh``（``bunker-local.service``）。
 """
 
 from __future__ import annotations
@@ -77,6 +79,8 @@ CMD_ALIASES = {
     "arm_done": "grasp_done",
     "mu": "map_upload",
     "pa": "pose_align",
+    "wb": "set_wheelbase",
+    "wbcal": "calibrate_wheelbase",
     "mr": "map_return",
     "q": "query",
     "can": "can_check",
@@ -195,6 +199,7 @@ def _now_ms() -> int:
 
 
 def _lan_ips() -> list[str]:
+    """本机非回环 IPv4。雷达网 / Docker 网桥放到最后，避免笔记本客户端抄错。"""
     ips: list[str] = []
     try:
         out = os.popen("hostname -I 2>/dev/null").read().split()
@@ -203,7 +208,83 @@ def _lan_ips() -> list[str]:
                 ips.append(tok)
     except Exception:
         pass
-    return ips
+
+    def _skip_for_laptop(ip: str) -> bool:
+        return ip.startswith("192.168.1.") or ip.startswith("172.17.")
+
+    client = [ip for ip in ips if not _skip_for_laptop(ip)]
+    other = [ip for ip in ips if _skip_for_laptop(ip)]
+    return client + other
+
+
+def _fmt_battery(p: dict) -> str:
+    """状态栏电量：SOC 百分比 + 0x211 电池包电压，避免把 0.89 误读成电压。"""
+    soc = p.get("battery")
+    volt = p.get("batteryVoltageV")
+    if volt is None:
+        chassis = p.get("chassis") or {}
+        sys = chassis.get("system") if isinstance(chassis, dict) else None
+        if isinstance(sys, dict):
+            volt = sys.get("batteryVoltageV")
+    parts: list[str] = []
+    if soc is not None:
+        try:
+            s = float(soc)
+            if 0.0 <= s <= 1.0:
+                parts.append(f"{s * 100.0:.0f}%")
+            elif s > 5.0:
+                parts.append(f"{s:.1f}V")
+            else:
+                parts.append(f"{s:.0f}%")
+        except (TypeError, ValueError):
+            parts.append(str(soc))
+    if volt is not None:
+        try:
+            v = float(volt)
+            if v > 5.0:
+                txt = f"{v:.1f}V"
+                if txt not in parts:
+                    parts.append(txt)
+                if v < 24.0:
+                    parts.append("低电")
+        except (TypeError, ValueError):
+            pass
+    return " ".join(parts) if parts else "?"
+
+
+def _print_jetson_power_hint() -> None:
+    """Orin Nano 走 5V + MAXN_SUPER 时，电机一起步就容易把工控机拉断电重启。"""
+    vdd_mv = None
+    iin_ma = None
+    try:
+        vdd_mv = int(open("/sys/class/hwmon/hwmon1/in1_input", encoding="ascii").read())
+        iin_ma = int(open("/sys/class/hwmon/hwmon1/curr1_input", encoding="ascii").read())
+    except (OSError, ValueError):
+        pass
+    mode = ""
+    try:
+        out = subprocess.check_output(["nvpmodel", "-q"], text=True, timeout=2)
+        for line in out.splitlines():
+            if "Power Mode" in line:
+                mode = line.split(":", 1)[-1].strip()
+                break
+    except Exception:
+        mode = ""
+    if vdd_mv is None and not mode:
+        return
+    bits = []
+    if mode:
+        bits.append(f"功耗档={mode}")
+    if vdd_mv is not None:
+        bits.append(f"VDD_IN={vdd_mv/1000.0:.2f}V")
+    if iin_ma is not None:
+        bits.append(f"Iin={iin_ma}mA")
+    print("  Jetson: " + " ".join(bits))
+    if vdd_mv is not None and vdd_mv < 5300:
+        print("  ⚠ 工控机输入约 5V，裕量很小。网页遥控起步电流一大，")
+        print("    5V 跌落到约 4.75V 就会整机重启（不是 run_local 写了 reboot）。")
+        print("    建议：Jetson 独立供电/加粗 5V 线；功耗档改 25W：sudo nvpmodel -m 1")
+        print("    网页默认 0.10 m/s，先别把 + 加到 0.50。")
 
 
 def _print_can_health() -> None:
@@ -242,12 +323,45 @@ def _print_can_health() -> None:
         print(f"  ⚠ {','.join(listening)} 仍是 LISTEN-ONLY，0x111 发不出去。")
 
 
+def _headless_env(environ: dict[str, str]) -> dict[str, str]:
+    """无头服务：关地图窗、默认关雷达驱动，清掉 DISPLAY，避免挤占桌面。"""
+    out = dict(environ)
+    out["BUNKER_MAP_VIEW"] = "0"
+    out["BUNKER_ENABLE_LIDAR"] = "0"
+    for key in ("DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY"):
+        out.pop(key, None)
+    return out
+
+
+def _wait_daemon_stop(agent: subprocess.Popen | None) -> int:
+    """阻塞直到 SIGTERM/SIGINT，或子代理退出（交给 systemd 重启）。"""
+    stop = threading.Event()
+
+    def _on_signal(signum: int, _frame) -> None:
+        name = "SIGTERM" if signum == signal.SIGTERM else "SIGINT"
+        print(f"无头模式收到 {name}，准备急停退出")
+        stop.set()
+
+    signal.signal(signal.SIGTERM, _on_signal)
+    signal.signal(signal.SIGINT, _on_signal)
+    print("无头模式已就绪（:9100 代理 + :9101 网页）。桌面不弹窗；雷达请在网页里再开。")
+    while not stop.wait(1.0):
+        if agent is not None and agent.poll() is not None:
+            print(
+                f"代理进程已退出 code={agent.returncode}，无头启动器退出",
+                file=sys.stderr,
+            )
+            return 1
+    return 0
+
+
 def _print_help() -> None:
     print(
         "可用指令（括号内为简写）。本启动器走 TCP，是推荐入口；不要再开云端模式。\n"
         "  move / m <v> <w> [t]  运动，例: m 0.2 0.1 或 m 0.2 0.1 10\n"
         "  kb / keyboard         本终端字符驾驶（SSH/Cursor 达不到 100Hz，仅调试）\n"
         "                       真遥控/任务：笔记本浏览器打开 http://<工控机IP>:9101\n"
+        "                       双击 start_teleop_client.sh/.bat 也可打开该页面\n"
         "                       或本机 python teleop_from_laptop.py --host <工控机IP>\n"
         "  estop / e / s         紧急停止\n"
         "  goto / g <x> <y> [speed] [yawDeg]  目标点自主导航（到位后转正车身）\n"
@@ -259,6 +373,9 @@ def _print_help() -> None:
         "  grasp_done / gd        机械臂抓取完成 → 底盘返回\n"
         "  map_return / mr on|off 地图优先返回\n"
         "  pose_align / pa x y yaw  地图系↔里程系标定\n"
+        "  set_wheelbase / wb <m>   设置轮距（写入 wheelbase.local）\n"
+        "  calibrate_wheelbase / wbcal <实测yaw°>\n"
+        "                       重置原点并原地转到已知角后，用地面航向标定轮距\n"
         "  map_upload / mu <file> 导入全局栅格地图（本机读文件，不下发大包）\n"
         "  lidar on / lo          开启雷达\n"
         "  lidar off / loff / lf  关闭雷达\n"
@@ -466,12 +583,22 @@ class LocalConsole:
             return
         self._last_state_key = key
         mcn = _MISSION_CN.get(str(mission.get("status") or ""), mission.get("status") or "-")
+        loc = p.get("localization") or {}
+        last_goto = p.get("lastGoto") or {}
+        loc_src = str(loc.get("source") or "odom")
+        wb = loc.get("wheelbaseM")
         if navigating:
             nav_txt = (
                 f"进行中 剩{float(dist):.2f}m" if dist is not None else "进行中"
             )
+            yaw_left = goto_info.get("errYawDeg")
+            if yaw_left is not None:
+                nav_txt += f" 航向差{float(yaw_left):.1f}°"
         else:
             nav_txt = "-"
+            err_m = last_goto.get("errM")
+            if last_goto.get("arrived") and err_m is not None:
+                nav_txt = f"上次残差{float(err_m):.3f}m"
         if front is None:
             front_txt = "-"
         else:
@@ -481,17 +608,19 @@ class LocalConsole:
                 front_txt = "-"
         print(
             "状态  pose=({:.2f},{:.2f},yaw={:.1f}°)  v={:.2f}  mode={}  "
-            "雷达={}  导航={}  前障={}  任务={}  电量={}".format(
+            "雷达={}  定位={}  轮距={}  导航={}  前障={}  任务={}  电量={}".format(
                 float(pose.get("x") or 0),
                 float(pose.get("y") or 0),
                 float(pose.get("yaw") or 0),
                 float(p.get("speed") or 0),
                 p.get("mode") or "?",
                 "在线" if lidar.get("online") else "离线",
+                loc_src,
+                f"{float(wb):.3f}m" if wb is not None else "-",
                 nav_txt,
                 front_txt,
                 mcn,
-                p.get("battery", "?"),
+                _fmt_battery(p),
             )
         )
 
@@ -723,6 +852,32 @@ class LocalConsole:
                 return True
             self._cmd({"action": "pose_align", "x": px, "y": py, "yawDeg": yaw})
             print(f"[TCP] pose_align ({px:.2f},{py:.2f}) yaw={yaw:.1f}°")
+        elif cmd == "set_wheelbase":
+            if len(parts) < 2:
+                loc = (self._last_state or {}).get("localization") or {}
+                cur = loc.get("wheelbaseM")
+                print("用法: set_wheelbase / wb <米>，例: wb 0.48")
+                if cur is not None:
+                    print(f"当前轮距 {float(cur):.3f} m")
+                return True
+            try:
+                wb = float(parts[1])
+            except ValueError:
+                print("轮距需为数字（米）")
+                return True
+            self._cmd({"action": "set_wheelbase", "wheelbaseM": wb})
+            print(f"[TCP] set_wheelbase {wb:.3f} m")
+        elif cmd == "calibrate_wheelbase":
+            if len(parts) < 2:
+                print("用法: wbcal <地面实测航向°>，先 z 重置原点再原地转到已知角")
+                return True
+            try:
+                yaw = float(parts[1])
+            except ValueError:
+                print("航向需为数字（度）")
+                return True
+            self._cmd({"action": "calibrate_wheelbase", "yawDeg": yaw})
+            print(f"[TCP] calibrate_wheelbase actualYaw={yaw:.1f}°")
         elif cmd == "map_upload":
             if len(parts) < 2:
                 print("用法: map_upload <file.json>")
@@ -1207,7 +1362,18 @@ def main() -> int:
                         help="不启动网页遥控 :9101")
     parser.add_argument("--web-port", type=int, default=DEFAULT_WEB_PORT,
                         help="网页遥控端口（默认 9101）")
+    parser.add_argument(
+        "--daemon", action="store_true",
+        help="无头模式：不读终端、不弹桌面窗，供 systemd 开机自启",
+    )
+    parser.add_argument(
+        "--no-lidar", action="store_true",
+        help="启动时代理不开雷达（网页里仍可 lidar_on）。--daemon 默认带上",
+    )
     args = parser.parse_args()
+
+    if args.daemon:
+        args.no_lidar = True
 
     if not JETSON.is_dir():
         print(f"找不到车侧目录: {JETSON}", file=sys.stderr)
@@ -1221,6 +1387,10 @@ def main() -> int:
     env["BUNKER_LOCAL_TCP"] = "1"
     env["BUNKER_MISSION_LOCK"] = "0"
     env.pop("BUNKER_AUTO_MISSION", None)
+    if args.daemon:
+        env = _headless_env(env)
+    elif args.no_lidar:
+        env["BUNKER_ENABLE_LIDAR"] = "0"
 
     host = args.host or env.get("BUNKER_TELEOP_HOST", "127.0.0.1")
     if host in ("0.0.0.0", ""):
@@ -1231,22 +1401,32 @@ def main() -> int:
         "0", "false", "False", "no",
     )
 
-    lan = " ".join(_lan_ips()) or "<工控机局域网IP>"
-    lan0 = lan.split()[0]
+    lan_list = _lan_ips()
+    lan = " ".join(lan_list) or "<工控机IP>"
+    lan0 = lan_list[0] if lan_list else "59.79.233.120"
+    radar_ips = [ip for ip in lan_list if ip.startswith("192.168.1.")]
     print("════════════════════════════════════════════════════════")
-    print("  本地任务启动器（推荐入口；云端模式已废弃，请勿再开 mock_cloud）")
-    print(f"  本窗口将连  {host}:{port}   agent 自带 9100，勿开 bunker-teleop.service")
+    if args.daemon:
+        print("  本地控制台无头模式（systemd / --daemon；不开终端、不弹桌面窗）")
+        print("  雷达默认关，笔记本打开网页后可点「雷达开」")
+    else:
+        print("  本地任务启动器（推荐入口；云端模式已废弃，请勿再开 mock_cloud）")
+    print(f"  本进程将连  {host}:{port}   agent 自带 9100，勿开 bunker-teleop.service")
     print(f"  代理起来后听 0.0.0.0:{port}  token={token}  （局域网可连，勿暴露外网）")
-    print(f"  工控机局域网: {lan}")
+    print(f"  本机地址: {lan}")
+    if radar_ips:
+        print(f"  注意: {' '.join(radar_ips)} 是雷达网口，笔记本不要填这个")
     print()
-    print("  老师要求的 100Hz 遥控（不要在 Cursor 里开 kb）：")
-    print(f"    笔记本浏览器打开  http://{lan0}:{args.web_port}")
-    print("    （页面读本机 HID，也可下发 fo / goto / 轨迹等任务）")
-    print(f"    或 PowerShell: python teleop_from_laptop.py --host {lan0}")
-    print("  本窗口 kb = SSH 字符流，只有 10～30Hz，仅调试。")
-    print("  本窗口仍可输入 fo / goto / r / f。Ctrl+C 立即急停退出。")
-    print("  车侧日志: bunker_jetson/agent.log   测 RTT: measure_latency.py")
-    _print_can_health()
+    print("  笔记本打开网页（Wi-Fi/校园网 IP，不是 192.168.1.x）：")
+    print(f"    http://{lan0}:{args.web_port}")
+    if not args.daemon:
+        print("    或 PowerShell: python teleop_from_laptop.py --host " + lan0)
+        print("  本窗口 kb = SSH 字符流，只有 10～30Hz，仅调试。")
+        print("  本窗口仍可输入 fo / goto / r / f。Ctrl+C 立即急停退出。")
+    print("  车侧日志: bunker_jetson/agent.log")
+    if not args.daemon:
+        _print_can_health()
+        _print_jetson_power_hint()
     print("════════════════════════════════════════════════════════")
 
     if bringup:
@@ -1256,6 +1436,7 @@ def main() -> int:
 
     children: list[subprocess.Popen] = []
     started_agent = False
+    agent = None
     logf = None
 
     def _stop_children() -> None:
@@ -1280,6 +1461,7 @@ def main() -> int:
             f"{host}:{port} 已被占用。不要复用可能带着「实战锁」的旧代理，"
             "否则终端有速度、底盘不动。\n"
             "请先结束旧进程再开本启动器：\n"
+            "  sudo systemctl stop bunker-local\n"
             "  pkill -f 'run_agent.py'\n"
             "  pkill -f run_local.py\n"
             "确认旧代理是本地模式且无实战锁时才可用: python3 run_local.py --attach",
@@ -1299,6 +1481,8 @@ def main() -> int:
         ]
         if env.get("BUNKER_CAN_CHANNEL"):
             agent_cmd.extend(["--channel", env["BUNKER_CAN_CHANNEL"]])
+        if args.no_lidar:
+            agent_cmd.append("--no-lidar")
         popen_kw: dict = {"cwd": str(JETSON), "env": env}
         if not args.agent_logs:
             log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1348,24 +1532,30 @@ def main() -> int:
                 tcp_host=host, tcp_port=port, token=token, http_port=args.web_port,
             )
             web.start()
-            print("网页控制台已开。笔记本浏览器打开（WASD 遥控 + 任务按钮）：")
+            print("网页控制台已开。笔记本打开（WASD 遥控 + 任务按钮）：")
             for url in web.urls():
                 print(f"    {url}")
         except OSError as exc:
             print(f"网页遥控 :{args.web_port} 未拉起: {exc}", file=sys.stderr)
             web = None
 
-    console = LocalConsole(client, env)
-    _print_help()
+    console = None
     rc = 0
     try:
-        console.run()
-    except KeyboardInterrupt:
-        print("\n停车退出")
-        rc = 130
+        if args.daemon:
+            rc = _wait_daemon_stop(agent)
+        else:
+            console = LocalConsole(client, env)
+            _print_help()
+            try:
+                console.run()
+            except KeyboardInterrupt:
+                print("\n停车退出")
+                rc = 130
     finally:
-        console._stop = True
-        console._close_viewers()
+        if console is not None:
+            console._stop = True
+            console._close_viewers()
         if web is not None:
             web.stop()
         try:
