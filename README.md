@@ -1,5 +1,7 @@
 # chassis_lidar_drivers
 
+Local console for Bunker Mini 2.0 + RoboSense Airy on Jetson (`run_local.py`, web `:9101`).
+
 BUNKER MINI 2.0 底盘 + RoboSense Airy 雷达项目的工作区根目录。
 
 ## 目录分工
