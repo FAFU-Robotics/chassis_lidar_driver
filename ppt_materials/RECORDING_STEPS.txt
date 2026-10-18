@@ -1,0 +1,129 @@
+挑战杯 PPT 现场录制步骤
+================================
+本文件只指导你手动录制。脚本不会开车、不会发 stick。
+不修改正式 YAML / SDK / MOLA / ICP / TF。
+不覆盖 maps/mola_lo.rviz。
+
+RViz 配置（唯一使用这个，不要用 mola_lo.rviz）：
+  /home/fafu_robot/Desktop/chassis_lidar_drivers/ppt_materials/rviz/ppt_live.rviz
+
+成片放到：
+  A1  → ppt_materials/A_perception/
+  A2+B1 → ppt_materials/A_perception/ 与 ppt_materials/B_localization/（同一段可复制两份）
+  C1/C2 → ppt_materials/C_motion/
+
+
+------------------------------------------------
+0. 公共准备（每段开始前做一次）
+------------------------------------------------
+工控机终端：
+
+  cd /home/fafu_robot/Desktop/chassis_lidar_drivers
+  /usr/bin/python3 ppt_materials/scripts/preflight.py --stage a1
+
+通过后再开 RViz（VNC 看 :0 画面）：
+
+  bash ppt_materials/scripts/start_rviz_ppt.sh
+
+打开后立刻确认左侧：
+  - Global Options → Fixed Frame = map
+  - RawLidar / DeskewedScan / LocalMap / LidarPose / TF 都是勾选
+  - 能同时看到：彩色/白色点云墙体、米色 LocalMap、坐标轴（机器人）
+  - 左下角不要有 TF Error
+
+用 VNC 或 visio 屏幕录制 RViz 窗口。手机另拍车体外观。
+
+
+------------------------------------------------
+1. A1 静止环境感知（12–15 秒）
+------------------------------------------------
+录制前检查：
+
+  /usr/bin/python3 ppt_materials/scripts/preflight.py --stage a1
+
+你手动做：
+  1. 人离开雷达近场，车保持静止
+  2. 鼠标把 RViz 转到能同时看见墙体 + 机器人坐标轴
+     （滚轮缩放：机器人不要缩成一个点，点云不要撑满整屏）
+  3. 开始录屏，数 12–15 秒，停录
+  4. 不要按 WASD
+
+得到：
+  ppt_materials/A_perception/A1_still_rviz.mp4
+  评委看到：真实三维环境感知（LiDAR + 去畸变 + LocalMap + 位姿）
+
+
+------------------------------------------------
+2. A2+B1 旋转扫描 + 定位建图（20–25 秒）
+------------------------------------------------
+录制前检查：
+
+  /usr/bin/python3 ppt_materials/scripts/preflight.py --stage a2b1
+
+脚本不会转车。你手动做：
+  1. RViz 继续用 ppt_live.rviz，Fixed Frame=map
+  2. 开始录屏
+  3. 静止 3 秒
+  4. 用网页 http://<工控机>:9101 或笔记本遥控，轻轻原地左转约 8–10 秒
+     （慢，不要甩）
+  5. 松键停车 2 秒
+  6. 停录
+  7. 可选复查（仍不会开车）：
+       /usr/bin/python3 ppt_materials/scripts/preflight.py --stage a2b1
+     此时 yaw 应相对 A1 有变化
+
+得到：
+  ppt_materials/A_perception/A2_spin_cloud.mp4
+  ppt_materials/B_localization/B1_spin_localmap_pose.mp4
+  （同一视频复制两份即可）
+  评委看到：点云随旋转更新；LocalMap/坐标轴在 map 里动
+
+
+------------------------------------------------
+3. C1+C2 人工遥控运动（车外观）
+------------------------------------------------
+录制前检查（不发速度）：
+
+  /usr/bin/python3 ppt_materials/scripts/preflight.py --stage c1c2
+
+你手动做：
+  C1（8–10 秒）：手机拍车体 → 遥控原地慢转 → 停
+  C2（6–8 秒）：确认前方 2 米净空 → 遥控慢速前进 3–4 秒 → 立刻松键停
+
+不要让脚本或我方自动 stick。
+
+得到：
+  ppt_materials/C_motion/C1_spin_chassis.mp4
+  ppt_materials/C_motion/C2_forward_chassis.mp4
+  评委看到：底盘真的能转、能走（人工遥控，不是自动驾驶）
+
+
+------------------------------------------------
+时长速查
+------------------------------------------------
+A1     12–15 s   静止
+A2+B1  20–25 s   静 3s + 你慢转 8–10s + 停 2s
+C1      8–10 s   你慢转，拍车
+C2      6–8 s    你慢速前进，拍车
+
+
+------------------------------------------------
+不要做
+------------------------------------------------
+- 不要用 maps/mola_lo.rviz（它订了空的 /horizon_localmap）
+- 不要改正式 YAML / MOLA / TF
+- 不要在 PPT 里把 dry-run 写成已经自主行驶
+- 不要录完还让车继续转；松键后确认停车
+
+
+------------------------------------------------
+4. Grid / A* / 自主 Demo（感知可现在拍；开车必须另允）
+------------------------------------------------
+详细镜头清单：nav_demo/PPT_SHOTLIST.md
+
+现在就可以拍（车不动）：
+  D 点云、E 障碍栅格、F LocalMap+pose、G A* 黄线
+  开 RViz：bash ppt_materials/scripts/start_rviz_ppt.sh
+  规划一次：/usr/bin/python3 nav_demo/plan_once.py --forward 1.8
+
+H 自主避障成片：等明确允许实车后再录。未允许前可用终端 DRY_RUN 作过渡页，标题写「未发车」。

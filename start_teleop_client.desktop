@@ -1,0 +1,12 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=打开网页控制台
+Name[en]=Bunker Web Console
+Comment=打开 Bunker 控制台桌面窗口（需先运行 run_local.py）
+Exec=/home/fafu_robot/Desktop/chassis_lidar_drivers/start_teleop_client.sh
+Path=/home/fafu_robot/Desktop/chassis_lidar_drivers
+Icon=web-browser
+Terminal=false
+StartupNotify=true
+Categories=Utility;

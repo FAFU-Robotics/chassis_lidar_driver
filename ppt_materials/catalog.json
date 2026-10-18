@@ -1,0 +1,201 @@
+{
+  "title": "挑战杯擂主级 PPT 素材工程",
+  "updated": "2026-09-02",
+  "purpose": "把当前已经存在的真实机器人能力做成评委能看懂的展示素材。不是算法开发，不虚构未完成功能。",
+  "rules": [
+    "不修改正式算法 / YAML / SDK / ICP / MOLA / TF / IMU",
+    "不安装 Nav2，不开发路径规划与避障",
+    "不生成 matplotlib 静态 PNG 作为主视觉",
+    "A/B/C 必须尽量用真实机器人数据",
+    "D 不允许写成已经完成"
+  ],
+  "live_stack_at_scan": {
+    "lidar": "rslidar_sdk → /rslidar_points",
+    "tf_static": "base_link → rslidar (z=0.365, roll+90, yaw+90); base_link → base_footprint",
+    "wheel_odom": "maps/publish_wheel_odom.py → /wheel_odom + TF odom→base_link",
+    "mola": "ros2-lidar-odometry.launch.py, start_mapping_enabled:=True",
+    "teleop": "run_local.py --daemon --no-lidar ; TCP :9100 stick(v,w)",
+    "rviz_running": "maps/mola_lo.rviz（LocalMap 订了空的 /horizon_localmap，不适合作为主视觉）"
+  },
+  "capabilities": {
+    "A_realtime_lidar": {
+      "status": "ready",
+      "judge_visible": true,
+      "evidence": "/rslidar_points PointCloud2 ~8Hz, frame_id=rslidar"
+    },
+    "A_deskewed_cloud": {
+      "status": "ready",
+      "judge_visible": true,
+      "evidence": "/lidar_odometry/deskewed_scan_points PointCloud2, frame_id=map"
+    },
+    "B_localmap": {
+      "status": "ready_sparse",
+      "judge_visible": true,
+      "note": "MOLA 关键帧局部点云，不是 OccupancyGrid，也不是最终高质量 SLAM 地图",
+      "evidence": "/lidar_odometry/localmap_points PointCloud2, frame_id=map"
+    },
+    "B_pose": {
+      "status": "ready",
+      "judge_visible": true,
+      "evidence": "/lidar_odometry/pose nav_msgs/Odometry map→base_link"
+    },
+    "B_tf": {
+      "status": "ready",
+      "judge_visible": true,
+      "evidence": "map → odom → base_link → rslidar / base_footprint"
+    },
+    "C_wheel_odom": {
+      "status": "ready",
+      "judge_visible": "as_supporting",
+      "evidence": "/wheel_odom；不单独当主视觉"
+    },
+    "C_chassis_interface": {
+      "status": "ready",
+      "judge_visible": true,
+      "evidence": "TeleopTcpClient.stick(v_mps, w_radps) → :9100 → CAN set_velocity"
+    },
+    "C_spin_in_place": {
+      "status": "proven_this_session",
+      "judge_visible": true,
+      "evidence": "现场已执行 stick(0, 0.28) 约 7s，MOLA yaw 0°→97°"
+    },
+    "C_forward_back_turn": {
+      "status": "proven_forward_and_turn",
+      "judge_visible": true,
+      "evidence": "现场已执行 stick(0.12, 0) 慢速前进；后退 stick(-v, 0) 接口存在，本轮未专门录制",
+      "backward": "接口可用，尚未作为 PPT 镜头验收"
+    },
+    "D_nav2": {
+      "status": "absent",
+      "judge_visible": false,
+      "evidence": "仅安装 nav2_map_server/msgs/util/common；无 bringup/planner/controller/costmap/AMCL；无 /map /plan /cmd_vel"
+    },
+    "D_agent_goto_oa": {
+      "status": "code_exists_not_live_ros2_demo",
+      "judge_visible": false,
+      "note": "bunker_jetson 内有轮式航迹推算 goto、ObstacleGuard、VFH、A* 伪地图、方式三扇区反应式避障。当前 mapping 会话未运行这些节点；agent 为 --no-lidar。不可写成已完成的 ROS2 自主导航。",
+      "code": [
+        "bunker_jetson/bunker_mini/navigator.py",
+        "bunker_jetson/bunker_mini/obstacle.py",
+        "bunker_jetson/bunker_mini/global_planner.py",
+        "bunker_jetson/run_obstacle_avoidance.py"
+      ]
+    }
+  },
+  "missing_for_judges": [
+    "OccupancyGrid /map（2D 栅格地图）",
+    "nav_msgs/Path 轨迹线 topic",
+    "Nav2 路径规划 /plan",
+    "Nav2 局部代价地图与自动避障",
+    "ROS2 /cmd_vel 导航控制",
+    "已对接 MOLA 位姿的全局自主导航闭环"
+  ],
+  "shots": [
+    {
+      "id": "A1",
+      "class": "A",
+      "title": "RViz 实时三维点云：墙体与周围结构",
+      "priority": 1,
+      "needs_drive": false,
+      "duration_s": 12,
+      "judge_sees": "雷达正在看真实房间，不是仿真",
+      "record": "VNC/屏幕录制 RViz：Fixed Frame=map，显示 /rslidar_points；机器人静止",
+      "drop_into": "ppt_materials/A_perception/"
+    },
+    {
+      "id": "A2",
+      "class": "A",
+      "title": "原地慢转时点云更新、墙体逐渐 sweep 出来",
+      "priority": 1,
+      "needs_drive": true,
+      "duration_s": 15,
+      "drive": "stick(0, 0.28) 约 8s 后停车",
+      "judge_sees": "感知随运动变化，不是一张死图",
+      "record": "同一 RViz 画面连续录；可加手机拍车体旋转",
+      "drop_into": "ppt_materials/A_perception/"
+    },
+    {
+      "id": "B1",
+      "class": "B",
+      "title": "MOLA LocalMap + 去畸变扫描叠在 map 系",
+      "priority": 1,
+      "needs_drive": true,
+      "duration_s": 20,
+      "drive": "静止 3s → 慢转 8s → 可选慢速前进 3s",
+      "judge_sees": "局部地图在长，机器人坐标轴在图里移动",
+      "record": "RViz：/lidar_odometry/localmap_points + deskewed_scan_points + pose/TF；不要用当前 mola_lo.rviz 的 /horizon_localmap",
+      "drop_into": "ppt_materials/B_localization/"
+    },
+    {
+      "id": "B2",
+      "class": "B",
+      "title": "TF 树与机器人位姿随 yaw 变化",
+      "priority": 2,
+      "needs_drive": true,
+      "duration_s": 12,
+      "judge_sees": "map / base_link / rslidar 坐标轴，定位在动",
+      "record": "RViz TF + Odometry(/lidar_odometry/pose)",
+      "drop_into": "ppt_materials/B_localization/"
+    },
+    {
+      "id": "C1",
+      "class": "C",
+      "title": "实车原地旋转（镜头看车）",
+      "priority": 1,
+      "needs_drive": true,
+      "duration_s": 10,
+      "drive": "stick(0, 0.28)",
+      "judge_sees": "底盘真的能转，不是只在软件里转",
+      "record": "手机/侧位固定机位拍车体；同期可画中画 RViz yaw",
+      "drop_into": "ppt_materials/C_motion/"
+    },
+    {
+      "id": "C2",
+      "class": "C",
+      "title": "实车慢速前进与停车",
+      "priority": 1,
+      "needs_drive": true,
+      "duration_s": 8,
+      "drive": "stick(0.12, 0) 约 3–4s 后 stick(0,0)",
+      "judge_sees": "底盘能受控移动",
+      "record": "手机跟拍车体；场地留出 1–2 m 净空",
+      "drop_into": "ppt_materials/C_motion/"
+    },
+    {
+      "id": "C3",
+      "class": "C",
+      "title": "实车后退（补镜，非必须）",
+      "priority": 3,
+      "needs_drive": true,
+      "duration_s": 6,
+      "drive": "stick(-0.10, 0) 约 2s",
+      "judge_sees": "前进/后退接口完整",
+      "record": "仅当场地后方安全时录",
+      "drop_into": "ppt_materials/C_motion/"
+    },
+    {
+      "id": "D1",
+      "class": "D",
+      "title": "技术路线图：感知定位已通，导航待接 Nav2/栅格",
+      "priority": 2,
+      "needs_drive": false,
+      "kind": "roadmap_slide",
+      "judge_sees": "团队知道下一层是什么，不假装已经避障规划",
+      "record": "不要录假的 /plan；用架构图。代码存在但未作为本场 ROS2 演示：agent goto / ObstacleGuard / 方式三避障",
+      "drop_into": "ppt_materials/D_navigation_roadmap/"
+    }
+  ],
+  "do_not_claim": [
+    "16 cm ICP XY 已解决",
+    "Nav2 已完成",
+    "已经能够全局路径规划",
+    "已经能够自动避障导航",
+    "/horizon_localmap 是 MOLA 地图（当前无发布者）"
+  ],
+  "next_recording": {
+    "order": ["A1", "A2+B1 一次连录", "C1 手机", "C2 手机", "B2", "D1 幻灯片"],
+    "why_first": "评委先要看见「真实三维环境 + 机器人在图里」。没有实车运动的点云截图会被当成离线图。",
+    "rviz": "优先官方 /opt/ros/humble/share/mola_lidar_odometry/rviz2/lidar-odometry.rviz（把 raw lidar topic 改到 /rslidar_points 的配置应放在 ppt_materials，不要覆盖 maps/mola_lo.rviz）。本轮尚未写入新 rviz 文件。",
+    "safety": "录制开车前确认场地净空；结束必须 stick(0,0)"
+  }
+}
